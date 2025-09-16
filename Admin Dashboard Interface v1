@@ -1,0 +1,401 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  Calendar, 
+  Users, 
+  MapPin, 
+  Clock, 
+  Settings, 
+  Play, 
+  Pause, 
+  BarChart3, 
+  AlertTriangle, 
+  CheckCircle, 
+  X,
+  Plus,
+  Eye,
+  Edit,
+  Trash2,
+  Filter,
+  Download,
+  Upload,
+  RefreshCw
+} from 'lucide-react';
+
+const AdminDashboard = () => {
+  const [activeTab, setActiveTab] = useState('overview');
+  const [loading, setLoading] = useState(false);
+  const [stats, setStats] = useState(null);
+  const [bookings, setBookings] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [overrides, setOverrides] = useState([]);
+  const [showModal, setShowModal] = useState(false);
+  const [modalType, setModalType] = useState('');
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+};
+
+  // Mock API functions (replace with actual API calls)
+  const fetchStats = async () => {
+    // Simulate API call
+    return {
+      totalBookings: 45,
+      autoBookings: 38,
+      manualBookings: 7,
+      activeUsers: 126,
+      avgAttendance: 16.8,
+      completedGames: 42,
+      cancelledGames: 3,
+      avgGameQuality: 4.2
+    };
+  };
+
+  const fetchBookings = async () => {
+    return [
+      {
+        id: '1',
+        date: '2024-12-15',
+        time: '18:00-20:00',
+        turf: 'Central Sports Complex',
+        status: 'scheduled',
+        type: 'auto',
+        players: 18
+      },
+      {
+        id: '2',
+        date: '2024-12-15',
+        time: '20:00-22:00',
+        turf: 'Green Valley Ground',
+        status: 'scheduled',
+        type: 'auto',
+        players: 16
+      }
+    ];
+  };
+
+  const fetchUsers = async () => {
+    return [
+      {
+        id: '1',
+        name: 'John Doe',
+        email: 'john@example.com',
+        skillLevel: 7,
+        gamesPlayed: 24,
+        lastActive: '2024-12-14'
+      },
+      {
+        id: '2',
+        name: 'Jane Smith',
+        email: 'jane@example.com',
+        skillLevel: 6,
+        gamesPlayed: 31,
+        lastActive: '2024-12-13'
+      }
+    ];
+  };
+
+  const fetchOverrides = async () => {
+    return [
+      {
+        id: '1',
+        type: 'user_exclusion',
+        target: 'John Doe',
+        reason: 'Injured - out for 2 weeks',
+        expires: '2024-12-28',
+        active: true
+      }
+    ];
+  };
+
+  useEffect(() => {
+    const loadData = async () => {
+      setLoading(true);
+      try {
+        const [statsData, bookingsData, usersData, overridesData] = await Promise.all([
+          fetchStats(),
+          fetchBookings(),
+          fetchUsers(),
+          fetchOverrides()
+        ]);
+        
+        setStats(statsData);
+        setBookings(bookingsData);
+        setUsers(usersData);
+        setOverrides(overridesData);
+      } catch (error) {
+        console.error('Error loading data:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
+  }, []);
+
+  const triggerAutoScheduling = async (date, force = false) => {
+    setLoading(true);
+    try {
+      console.log(`Triggering auto-scheduling for ${date}, force: ${force}`);
+      // API call would go here
+      await new Promise(resolve => setTimeout(resolve, 2000)); // Simulate API call
+      alert('Auto-scheduling completed successfully!');
+      // Refresh bookings
+      setBookings(await fetchBookings());
+    } catch (error) {
+      console.error('Auto-scheduling failed:', error);
+      alert('Auto-scheduling failed. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const createOverride = async (overrideData) => {
+    try {
+      console.log('Creating override:', overrideData);
+      // API call would go here
+      setOverrides(await fetchOverrides());
+      setShowModal(false);
+      alert('Override created successfully!');
+    } catch (error) {
+      console.error('Error creating override:', error);
+      alert('Failed to create override.');
+    }
+  };
+
+  const deleteOverride = async (overrideId) => {
+    if (confirm('Are you sure you want to delete this override?')) {
+      try {
+        console.log('Deleting override:', overrideId);
+        // API call would go here
+        setOverrides(overrides.filter(o => o.id !== overrideId));
+        alert('Override deleted successfully!');
+      } catch (error) {
+        console.error('Error deleting override:', error);
+        alert('Failed to delete override.');
+      }
+    }
+  };
+
+  const StatCard = ({ title, value, subtitle, icon: Icon, color = 'blue' }) => (
+    <div className="bg-white rounded-lg shadow-md p-6 border-l-4 border-blue-500">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm font-medium text-gray-600">{title}</p>
+          <p className="text-3xl font-bold text-gray-900">{value}</p>
+          {subtitle && <p className="text-sm text-gray-500 mt-1">{subtitle}</p>}
+        </div>
+        <div className={`p-3 rounded-full bg-${color}-100`}>
+          <Icon className={`h-6 w-6 text-${color}-600`} />
+        </div>
+      </div>
+    </div>
+  );
+
+  const OverviewTab = () => (
+    <div className="space-y-6">
+      {/* Stats Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <StatCard
+          title="Total Bookings (30d)"
+          value={stats?.totalBookings || 0}
+          subtitle={`${stats?.autoBookings || 0} auto, ${stats?.manualBookings || 0} manual`}
+          icon={Calendar}
+          color="blue"
+        />
+        <StatCard
+          title="Active Users"
+          value={stats?.activeUsers || 0}
+          subtitle="Registered players"
+          icon={Users}
+          color="green"
+        />
+        <StatCard
+          title="Avg Attendance"
+          value={stats?.avgAttendance?.toFixed(1) || '0.0'}
+          subtitle="Players per game"
+          icon={BarChart3}
+          color="purple"
+        />
+        <StatCard
+          title="Game Quality"
+          value={stats?.avgGameQuality?.toFixed(1) || '0.0'}
+          subtitle="Average rating"
+          icon={CheckCircle}
+          color="yellow"
+        />
+      </div>
+
+      {/* Quick Actions */}
+      <div className="bg-white rounded-lg shadow-md p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <button
+            onClick={() => triggerAutoScheduling(selectedDate, false)}
+            disabled={loading}
+            className="flex items-center justify-center px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+          >
+            {loading ? <RefreshCw className="h-4 w-4 mr-2 animate-spin" /> : <Play className="h-4 w-4 mr-2" />}
+            Run Auto-Schedule
+          </button>
+          
+          <button
+            onClick={() => {
+              setModalType('manual_booking');
+              setShowModal(true);
+            }}
+            className="flex items-center justify-center px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+          >
+            <Plus className="h-4 w-4 mr-2" />
+            Manual Booking
+          </button>
+          
+          <button
+            onClick={() => {
+              setModalType('user_override');
+              setShowModal(true);
+            }}
+            className="flex items-center justify-center px-4 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+          >
+            <Settings className="h-4 w-4 mr-2" />
+            Create Override
+          </button>
+        </div>
+      </div>
+
+      {/* Recent Activity */}
+      <div className="bg-white rounded-lg shadow-md p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">Recent Bookings</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm text-left">
+            <thead className="text-xs text-gray-700 uppercase bg-gray-50">
+              <tr>
+                <th className="px-6 py-3">Date</th>
+                <th className="px-6 py-3">Time</th>
+                <th className="px-6 py-3">Turf</th>
+                <th className="px-6 py-3">Type</th>
+                <th className="px-6 py-3">Players</th>
+                <th className="px-6 py-3">Status</th>
+                <th className="px-6 py-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bookings.map((booking) => (
+                <tr key={booking.id} className="bg-white border-b hover:bg-gray-50">
+                  <td className="px-6 py-4">{booking.date}</td>
+                  <td className="px-6 py-4">{booking.time}</td>
+                  <td className="px-6 py-4">{booking.turf}</td>
+                  <td className="px-6 py-4">
+                    <span className={`px-2 py-1 text-xs rounded-full ${
+                      booking.type === 'auto' 
+                        ? 'bg-blue-100 text-blue-800' 
+                        : 'bg-yellow-100 text-yellow-800'
+                    }`}>
+                      {booking.type}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4">{booking.players}</td>
+                  <td className="px-6 py-4">
+                    <span className={`px-2 py-1 text-xs rounded-full ${
+                      booking.status === 'scheduled'
+                        ? 'bg-green-100 text-green-800'
+                        : booking.status === 'completed'
+                        ? 'bg-gray-100 text-gray-800'
+                        : 'bg-red-100 text-red-800'
+                    }`}>
+                      {booking.status}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="flex space-x-2">
+                      <button className="text-blue-600 hover:text-blue-800">
+                        <Eye className="h-4 w-4" />
+                      </button>
+                      <button className="text-green-600 hover:text-green-800">
+                        <Edit className="h-4 w-4" />
+                      </button>
+                      <button className="text-red-600 hover:text-red-800">
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+
+  const OverridesTab = () => (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <h2 className="text-2xl font-bold text-gray-900">Admin Overrides</h2>
+        <button
+          onClick={() => {
+            setModalType('user_override');
+            setShowModal(true);
+          }}
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+        >
+          <Plus className="h-4 w-4 inline mr-2" />
+          New Override
+        </button>
+      </div>
+
+      <div className="bg-white rounded-lg shadow-md p-6">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm text-left">
+            <thead className="text-xs text-gray-700 uppercase bg-gray-50">
+              <tr>
+                <th className="px-6 py-3">Type</th>
+                <th className="px-6 py-3">Target</th>
+                <th className="px-6 py-3">Reason</th>
+                <th className="px-6 py-3">Expires</th>
+                <th className="px-6 py-3">Status</th>
+                <th className="px-6 py-3">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {overrides.map((override) => (
+                <tr key={override.id} className="bg-white border-b hover:bg-gray-50">
+                  <td className="px-6 py-4">
+                    <span className="px-2 py-1 text-xs rounded-full bg-purple-100 text-purple-800">
+                      {override.type.replace('_', ' ')}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 font-medium">{override.target}</td>
+                  <td className="px-6 py-4">{override.reason}</td>
+                  <td className="px-6 py-4">{override.expires}</td>
+                  <td className="px-6 py-4">
+                    <span className={`px-2 py-1 text-xs rounded-full ${
+                      override.active 
+                        ? 'bg-green-100 text-green-800' 
+                        : 'bg-red-100 text-red-800'
+                    }`}>
+                      {override.active ? 'Active' : 'Inactive'}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="flex space-x-2">
+                      <button className="text-green-600 hover:text-green-800">
+                        <Edit className="h-4 w-4" />
+                      </button>
+                      <button 
+                        onClick={() => deleteOverride(override.id)}
+                        className="text-red-600 hover:text-red-800"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+
+  const UsersTab = () => (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
