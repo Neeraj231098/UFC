@@ -1,0 +1,371 @@
+## Team Structure
+
+### Predefined Teams
+```
+🐉 Dragons (Red)    - Team Color: #FF4444
+🦅 Hawks (White)    - Team Color: #FFFFFF  
+🦁 Lions (Yellow)   - Team Color: #FFD700
+🦈 Sharks (Blue)    - Team Color: #4444FF
+```
+
+---
+
+## Algorithm Overview
+
+### Fair Team Assignment Strategy
+1. **Position Priority**: Ensure each team has balanced positions
+2. **Skill Balancing**: Distribute players by skill ratings
+3. **Experience Distribution**: Mix experienced and new players
+4. **Admin Override**: Manual adjustments capability
+
+---
+
+## Flowchart: Team Assignment Logic
+
+```
+START
+  ↓
+[Get All Registered Players]
+  ↓
+[Categorize by Position: GK, DEF, MID, FWD]
+  ↓
+[Sort Each Position by Skill Rating (DESC)]
+  ↓
+[Initialize 4 Teams: Dragons, Hawks, Lions, Sharks]
+  ↓
+[Phase 1: Distribute Goalkeepers]
+  ↓
+[Phase 2: Distribute Defenders] 
+  ↓
+[Phase 3: Distribute Midfielders]
+  ↓
+[Phase 4: Distribute Forwards]
+  ↓
+[Phase 5: Balance Remaining Players]
+  ↓
+[Calculate Team Strength Scores]
+  ↓
+[Teams Balanced?] ──NO──→ [Perform Skill-Based Swaps]
+  ↓ YES                        ↑
+[Check Admin Overrides]         │
+  ↓                            │
+[Apply Manual Assignments] ──────┘
+  ↓
+[Save Final Team Assignments]
+  ↓
+[Notify Players of Team Assignments]
+  ↓
+END
+```
+
+---
+
+## Pseudocode Implementation
+
+### Main Team Assignment Function
+```pseudocode
+FUNCTION assignTeamsAutomatic(matchId, playerList):
+    // Initialize teams
+    teams = {
+        "DRAGONS": { players: [], totalSkill: 0, positions: {} },
+        "HAWKS":   { players: [], totalSkill: 0, positions: {} },
+        "LIONS":   { players: [], totalSkill: 0, positions: {} },
+        "SHARKS":  { players: [], totalSkill: 0, positions: {} }
+    }
+    
+    // Categorize players by position
+    gks = filterPlayersByPosition(playerList, "GK")
+    defenders = filterPlayersByPosition(playerList, "DEF") 
+    midfielders = filterPlayersByPosition(playerList, "MID")
+    forwards = filterPlayersByPosition(playerList, "FWD")
+    
+    // Sort each position by skill (highest first)
+    gks = sortBySkillDesc(gks)
+    defenders = sortBySkillDesc(defenders)
+    midfielders = sortBySkillDesc(midfielders)
+    forwards = sortBySkillDesc(forwards)
+    
+    // Phase 1: Distribute goalkeepers (snake draft)
+    distributePlayers(gks, teams, "GK", SNAKE_DRAFT)
+    
+    // Phase 2: Distribute defenders
+    distributePlayers(defenders, teams, "DEF", SNAKE_DRAFT)
+    
+    // Phase 3: Distribute midfielders  
+    distributePlayers(midfielders, teams, "MID", SNAKE_DRAFT)
+    
+    // Phase 4: Distribute forwards
+    distributePlayers(forwards, teams, "FWD", SNAKE_DRAFT)
+    
+    // Phase 5: Balance teams by overall skill
+    balanceTeamsBySkill(teams)
+    
+    // Apply admin overrides if any
+    adminOverrides = getAdminOverrides(matchId)
+    IF adminOverrides.exists():
+        applyAdminOverrides(teams, adminOverrides)
+    END IF
+    
+    // Save assignments
+    saveTeamAssignments(matchId, teams)
+    
+    RETURN teams
+END FUNCTION
+```
+
+### Snake Draft Distribution
+```pseudocode
+FUNCTION distributePlayers(playerList, teams, position, method):
+    teamKeys = ["DRAGONS", "HAWKS", "LIONS", "SHARKS"]
+    teamIndex = 0
+    direction = 1  // 1 for forward, -1 for reverse
+    
+    FOR each player in playerList:
+        currentTeam = teamKeys[teamIndex]
+        
+        // Add player to team
+        teams[currentTeam].players.push(player)
+        teams[currentTeam].totalSkill += player.skillRating
+        teams[currentTeam].positions[position] = 
+            teams[currentTeam].positions[position] + 1
+        
+        // Snake draft logic - reverse direction at ends
+        IF teamIndex == 3 AND direction == 1:
+            direction = -1
+        ELSE IF teamIndex == 0 AND direction == -1:
+            direction = 1
+        ELSE:
+            teamIndex += direction
+        END IF
+    END FOR
+END FUNCTION
+```
+
+### Team Balancing Algorithm
+```pseudocode
+FUNCTION balanceTeamsBySkill(teams):
+    maxIterations = 10
+    iterations = 0
+    
+    WHILE iterations < maxIterations:
+        // Calculate skill variance between teams
+        skillVariance = calculateSkillVariance(teams)
+        
+        IF skillVariance < ACCEPTABLE_THRESHOLD:
+            BREAK  // Teams are balanced
+        END IF
+        
+        // Find weakest and strongest teams
+        weakestTeam = getWeakestTeam(teams)
+        strongestTeam = getStrongestTeam(teams)
+        
+        // Attempt beneficial player swap
+        swapMade = attemptPlayerSwap(weakestTeam, strongestTeam)
+        
+        IF NOT swapMade:
+            BREAK  // No beneficial swaps possible
+        END IF
+        
+        iterations++
+    END WHILE
+END FUNCTION
+```
+
+### Admin Override System
+```pseudocode
+FUNCTION applyAdminOverrides(teams, overrides):
+    FOR each override in overrides:
+        playerId = override.playerId
+        newTeam = override.newTeam
+        oldTeam = override.oldTeam
+        
+        // Remove player from old team
+        removePlayerFromTeam(teams[oldTeam], playerId)
+        
+        // Add player to new team
+        addPlayerToTeam(teams[newTeam], playerId)
+        
+        // Log override action
+        logOverride(override, timestamp())
+    END FOR
+    
+    // Recalculate team statistics
+    recalculateTeamStats(teams)
+END FUNCTION
+```
+
+---
+
+## Database Schema
+
+### Teams Table
+```sql
+CREATE TABLE teams (
+    id UUID PRIMARY KEY,
+    name VARCHAR(50) NOT NULL, -- 'Dragons', 'Hawks', 'Lions', 'Sharks'
+    color_code VARCHAR(7), -- '#FF4444', '#FFFFFF', '#FFD700', '#4444FF'
+    created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+### Team Assignments Table
+```sql
+CREATE TABLE team_assignments (
+    id UUID PRIMARY KEY,
+    match_id UUID REFERENCES matches(id),
+    player_id UUID REFERENCES players(id),
+    team_id UUID REFERENCES teams(id),
+    assignment_method VARCHAR(20), -- 'auto', 'admin_override'
+    assigned_by UUID REFERENCES users(id), -- admin user id for overrides
+    assigned_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(match_id, player_id) -- One assignment per player per match
+);
+```
+
+### Admin Override Log Table
+```sql
+CREATE TABLE admin_overrides (
+    id UUID PRIMARY KEY,
+    match_id UUID REFERENCES matches(id),
+    player_id UUID REFERENCES players(id),
+    old_team_id UUID REFERENCES teams(id),
+    new_team_id UUID REFERENCES teams(id),
+    admin_id UUID REFERENCES users(id),
+    reason TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+---
+
+## API Endpoints
+
+### Team Assignment Endpoints
+```
+POST /api/matches/{matchId}/teams/assign-auto
+GET  /api/matches/{matchId}/teams
+PUT  /api/matches/{matchId}/teams/{teamId}/players
+POST /api/matches/{matchId}/teams/override
+GET  /api/matches/{matchId}/teams/balance-report
+```
+
+### Admin Override Endpoints
+```
+POST /api/admin/teams/override
+GET  /api/admin/teams/overrides/history
+PUT  /api/admin/teams/override/{overrideId}
+DELETE /api/admin/teams/override/{overrideId}
+```
+
+---
+
+## Skill Rating & Position System
+
+### Player Skill Ratings (1-10 scale)
+```javascript
+const skillWeights = {
+    GK: {
+        reflexes: 0.3,
+        positioning: 0.25, 
+        distribution: 0.2,
+        communication: 0.25
+    },
+    DEF: {
+        tackling: 0.3,
+        positioning: 0.25,
+        passing: 0.2,
+        heading: 0.25
+    },
+    MID: {
+        passing: 0.3,
+        vision: 0.25,
+        stamina: 0.2,
+        tackling: 0.25
+    },
+    FWD: {
+        finishing: 0.3,
+        pace: 0.25,
+        dribbling: 0.2,
+        positioning: 0.25
+    }
+};
+```
+
+### Team Balance Metrics
+```javascript
+const balanceMetrics = {
+    maxSkillVariance: 5.0,        // Max acceptable skill difference between teams
+    minPlayersPerPosition: 1,      // Minimum players per position per team
+    maxPlayersPerPosition: 4,      // Maximum players per position per team
+    experienceWeight: 0.3          // Weight for experience in balancing
+};
+```
+
+---
+
+## Admin Dashboard Features
+
+### Team Management Interface
+1. **Live Team View**: Real-time team composition display
+2. **Drag & Drop**: Move players between teams visually
+3. **Balance Indicator**: Team strength comparison bars
+4. **Position Matrix**: Visual grid showing position coverage
+5. **Override History**: Log of all manual changes
+
+### Override Options
+```javascript
+const overrideOptions = {
+    SINGLE_PLAYER: "Move one player to different team",
+    PLAYER_SWAP: "Swap two players between teams", 
+    BULK_REASSIGN: "Reassign multiple players",
+    RESET_AUTO: "Reset to automatic assignment",
+    CUSTOM_BALANCE: "Manual team balancing"
+};
+```
+
+---
+
+## Testing Strategy
+
+### Algorithm Validation Tests
+```javascript
+// Test cases for team assignment
+const testScenarios = [
+    {
+        name: "Perfect Balance - 12 Players",
+        players: 12,
+        positions: { GK: 2, DEF: 4, MID: 4, FWD: 2 },
+        expectedTeams: 4,
+        expectedPlayersPerTeam: 3
+    },
+    {
+        name: "Uneven Skills Distribution", 
+        players: 16,
+        skillVariance: "high",
+        expectedBalanceScore: "< 3.0"
+    },
+    {
+        name: "Position Shortage - No GK",
+        players: 14,
+        positions: { DEF: 6, MID: 6, FWD: 2 },
+        expectedHandling: "error_or_substitute"
+    }
+];
+```
+
+---
+
+## Edge Cases & Error Handling
+
+### Common Scenarios
+1. **Insufficient Players**: < 12 players registered
+2. **Missing Positions**: No goalkeepers available  
+3. **Skill Imbalance**: All high-skill or low-skill players
+4. **Admin Conflicts**: Contradictory override requests
+5. **Late Registrations**: Players joining after assignment
+
+### Fallback Strategies
+- **Random Assignment**: When balancing fails
+- **Volunteer Goalkeeping**: Ask outfield players to play GK
+- **Smaller Teams**: 5v5 or 4v4 if needed
+- **Mixed Experience**: Ensure veteran-rookie balance
