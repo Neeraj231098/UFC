@@ -1,0 +1,302 @@
+-- Database Setup Script for Football Club Management System
+-- Run this script to create all necessary tables and initial data
+
+-- Enable UUID extension
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- Drop existing tables if they exist (for fresh setup)
+DROP TABLE IF EXISTS notifications CASCADE;
+DROP TABLE IF EXISTS admin_overrides CASCADE;
+DROP TABLE IF EXISTS team_assignments CASCADE;
+DROP TABLE IF EXISTS bookings CASCADE;
+DROP TABLE IF EXISTS turf_availability CASCADE;
+DROP TABLE IF EXISTS turfs CASCADE;
+DROP TABLE IF EXISTS user_preferences CASCADE;
+DROP TABLE IF EXISTS users CASCADE;
+DROP TABLE IF EXISTS teams CASCADE;
+
+-- Users table
+CREATE TABLE users (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    email VARCHAR(255) UNIQUE NOT NULL,
+    phone VARCHAR(20) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    full_name VARCHAR(255) NOT NULL,
+    date_of_birth DATE NOT NULL,
+    skill_level INTEGER CHECK (skill_level BETWEEN 1 AND 10) DEFAULT 5,
+    position VARCHAR(50), -- 'goalkeeper', 'defender', 'midfielder', 'forward'
+    emergency_contact VARCHAR(255),
+    medical_notes TEXT,
+    is_active BOOLEAN DEFAULT true,
+    is_admin BOOLEAN DEFAULT false,
+    total_games_played INTEGER DEFAULT 0,
+    average_rating DECIMAL(3,2) DEFAULT 0.00,
+    last_active_date DATE DEFAULT CURRENT_DATE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- User preferences table
+CREATE TABLE user_preferences (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    preferred_time_slots TEXT[], -- array like ['18:00-20:00', '20:00-22:00']
+    preferred_days TEXT[], -- array like ['monday', 'wednesday', 'friday']
+    max_games_per_week INTEGER DEFAULT 3,
+    notification_preferences JSONB DEFAULT '{"email": true, "sms": false, "push": true}',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Teams table
+CREATE TABLE teams (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(255) NOT NULL,
+    color_code VARCHAR(7) DEFAULT '#000000', -- hex color
+    average_skill_level DECIMAL(3,2) DEFAULT 0.00,
+    total_members INTEGER DEFAULT 0,
+    win_rate DECIMAL(5,2) DEFAULT 0.00,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Turfs table
+CREATE TABLE turfs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(255) NOT NULL,
+    location VARCHAR(500) NOT NULL,
+    capacity INTEGER NOT NULL,
+    hourly_rate DECIMAL(10,2) NOT NULL,
+    facilities TEXT[], -- array like ['parking', 'changing_rooms', 'lighting']
+    surface_type VARCHAR(50) DEFAULT 'artificial_grass',
+    dimensions VARCHAR(50), -- e.g., '100x60 meters'
+    contact_info JSONB,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Turf availability table
+CREATE TABLE turf_availability (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    turf_id UUID REFERENCES turfs(id) ON DELETE CASCADE,
+    date DATE NOT NULL,
+    start_time TIME NOT NULL,
+    end_time TIME NOT NULL,
+    is_available BOOLEAN DEFAULT true,
+    price_override DECIMAL(10,2), -- null means use default hourly_rate
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(turf_id, date, start_time)
+);
+
+-- Bookings table
+CREATE TABLE bookings (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    turf_id UUID REFERENCES turfs(id) ON DELETE CASCADE,
+    booking_date DATE NOT NULL,
+    start_time TIME NOT NULL,
+    end_time TIME NOT NULL,
+    total_cost DECIMAL(10,2) NOT NULL,
+    status VARCHAR(20) DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'completed', 'cancelled', 'no_show')),
+    booking_type VARCHAR(20) DEFAULT 'auto' CHECK (booking_type IN ('auto', 'manual')),
+    weather_condition VARCHAR(50),
+    attendance_count INTEGER DEFAULT 0,
+    game_quality_rating DECIMAL(3,2),
+    notes TEXT,
+    created_by UUID REFERENCES users(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Team assignments table
+CREATE TABLE team_assignments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    booking_id UUID REFERENCES bookings(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    team_id UUID REFERENCES teams(id) ON DELETE CASCADE,
+    assignment_type VARCHAR(20) DEFAULT 'auto' CHECK (assignment_type IN ('auto', 'manual')),
+    attendance_status VARCHAR(20) DEFAULT 'assigned' CHECK (attendance_status IN ('assigned', 'confirmed', 'cancelled', 'no_show', 'present')),
+    performance_rating DECIMAL(3,2),
+    position_played VARCHAR(50),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(booking_id, user_id)
+);
+
+-- Admin overrides table
+CREATE TABLE admin_overrides (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    admin_user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    override_type VARCHAR(50) NOT NULL, -- 'booking_manual', 'team_assignment', 'user_exclusion', etc.
+    target_id UUID NOT NULL, -- booking_id, user_id, etc. depending on override_type
+    original_data JSONB, -- store original state
+    override_data JSONB, -- store override details
+    reason TEXT,
+    is_active BOOLEAN DEFAULT true,
+    expires_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Notifications table
+CREATE TABLE notifications (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    type VARCHAR(50) NOT NULL, -- 'booking_reminder', 'team_assignment', 'cancellation', etc.
+    title VARCHAR(255) NOT NULL,
+    message TEXT NOT NULL,
+    data JSONB, -- additional structured data
+    is_read BOOLEAN DEFAULT false,
+    delivery_method VARCHAR(20) DEFAULT 'in_app', -- 'in_app', 'email', 'sms'
+    scheduled_for TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    sent_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for performance
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_active ON users(is_active) WHERE is_active = true;
+CREATE INDEX idx_user_preferences_user_id ON user_preferences(user_id);
+
+CREATE INDEX idx_turfs_active ON turfs(is_active) WHERE is_active = true;
+CREATE INDEX idx_turf_availability_turf_date ON turf_availability(turf_id, date);
+CREATE INDEX idx_turf_availability_available ON turf_availability(is_available) WHERE is_available = true;
+
+CREATE INDEX idx_bookings_date ON bookings(booking_date);
+CREATE INDEX idx_bookings_status ON bookings(status);
+CREATE INDEX idx_bookings_turf_date ON bookings(turf_id, booking_date);
+
+CREATE INDEX idx_team_assignments_booking ON team_assignments(booking_id);
+CREATE INDEX idx_team_assignments_user ON team_assignments(user_id);
+CREATE INDEX idx_team_assignments_team ON team_assignments(team_id);
+
+CREATE INDEX idx_admin_overrides_active ON admin_overrides(is_active) WHERE is_active = true;
+CREATE INDEX idx_admin_overrides_type ON admin_overrides(override_type);
+
+CREATE INDEX idx_notifications_user_unread ON notifications(user_id, is_read) WHERE is_read = false;
+CREATE INDEX idx_notifications_scheduled ON notifications(scheduled_for) WHERE sent_at IS NULL;
+
+-- Triggers for updated_at timestamps
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_user_preferences_updated_at BEFORE UPDATE ON user_preferences FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_teams_updated_at BEFORE UPDATE ON teams FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_turfs_updated_at BEFORE UPDATE ON turfs FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_bookings_updated_at BEFORE UPDATE ON bookings FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_team_assignments_updated_at BEFORE UPDATE ON team_assignments FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_admin_overrides_updated_at BEFORE UPDATE ON admin_overrides FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Function to update team statistics
+CREATE OR REPLACE FUNCTION update_team_stats()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'INSERT' OR TG_OP = 'UPDATE' THEN
+        -- Update team member count and average skill level
+        UPDATE teams 
+        SET 
+            total_members = (
+                SELECT COUNT(DISTINCT ta.user_id)
+                FROM team_assignments ta
+                JOIN bookings b ON ta.booking_id = b.id
+                WHERE ta.team_id = NEW.team_id
+                AND b.booking_date >= CURRENT_DATE - INTERVAL '30 days'
+            ),
+            average_skill_level = (
+                SELECT COALESCE(AVG(u.skill_level), 0)
+                FROM team_assignments ta
+                JOIN users u ON ta.user_id = u.id
+                JOIN bookings b ON ta.booking_id = b.id
+                WHERE ta.team_id = NEW.team_id
+                AND b.booking_date >= CURRENT_DATE - INTERVAL '30 days'
+            )
+        WHERE id = NEW.team_id;
+        
+        RETURN NEW;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_update_team_stats
+    AFTER INSERT OR UPDATE ON team_assignments
+    FOR EACH ROW EXECUTE FUNCTION update_team_stats();
+
+-- Insert initial data
+INSERT INTO teams (id, name, color_code) VALUES 
+    ('550e8400-e29b-41d4-a716-446655440001', 'Team Red', '#DC2626'),
+    ('550e8400-e29b-41d4-a716-446655440002', 'Team Blue', '#2563EB');
+
+-- Sample turf data
+INSERT INTO turfs (id, name, location, capacity, hourly_rate, facilities) VALUES 
+    ('660e8400-e29b-41d4-a716-446655440001', 'Central Sports Complex', 'Downtown Sports Center, Main Road', 22, 2500.00, ARRAY['parking', 'changing_rooms', 'lighting', 'refreshments']),
+    ('660e8400-e29b-41d4-a716-446655440002', 'Green Valley Ground', 'Green Valley Society, Sector 5', 18, 2000.00, ARRAY['parking', 'changing_rooms', 'lighting']);
+
+-- Sample availability (next 30 days, 6 PM to 10 PM slots)
+INSERT INTO turf_availability (turf_id, date, start_time, end_time, is_available)
+SELECT 
+    turf.id,
+    date_series.date,
+    time_slot.start_time,
+    time_slot.end_time,
+    true
+FROM 
+    (SELECT id FROM turfs) turf
+CROSS JOIN 
+    (SELECT generate_series(CURRENT_DATE, CURRENT_DATE + INTERVAL '30 days', INTERVAL '1 day')::date as date) date_series
+CROSS JOIN
+    (VALUES 
+        ('18:00'::time, '20:00'::time),
+        ('20:00'::time, '22:00'::time)
+    ) time_slot(start_time, end_time);
+
+-- Create admin user (password is 'admin123' hashed)
+INSERT INTO users (id, email, phone, password_hash, full_name, date_of_birth, is_admin) 
+VALUES (
+    '770e8400-e29b-41d4-a716-446655440001',
+    'admin@footballclub.com', 
+    '+919999999999',
+    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LeODf6hdlpTWdPiue', -- admin123
+    'System Administrator',
+    '1990-01-01',
+    true
+);
+
+-- Views for easier querying
+CREATE VIEW active_bookings AS
+SELECT 
+    b.*,
+    t.name as turf_name,
+    t.location as turf_location
+FROM bookings b
+JOIN turfs t ON b.turf_id = t.id
+WHERE b.status = 'scheduled'
+AND b.booking_date >= CURRENT_DATE
+ORDER BY b.booking_date, b.start_time;
+
+CREATE VIEW user_stats AS
+SELECT 
+    u.id,
+    u.full_name,
+    u.email,
+    u.skill_level,
+    u.total_games_played,
+    u.average_rating,
+    COUNT(ta.id) as upcoming_games,
+    u.last_active_date
+FROM users u
+LEFT JOIN team_assignments ta ON u.id = ta.user_id
+LEFT JOIN bookings b ON ta.booking_id = b.id AND b.booking_date >= CURRENT_DATE AND b.status = 'scheduled'
+WHERE u.is_active = true
+GROUP BY u.id, u.full_name, u.email, u.skill_level, u.total_games_played, u.average_rating, u.last_active_date;
+
+-- Success message
+SELECT 'Database setup completed successfully! All tables, indexes, triggers, and initial data created.' AS status;
