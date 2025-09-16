@@ -1,0 +1,440 @@
+// UFC App Backend Implementation - Node.js/Express
+
+const express = require('express');
+const { Pool } = require('pg');
+const cron = require('node-cron');
+const app = express();
+
+// Database Configuration
+const pool = new Pool({
+    user: process.env.DB_USER || 'ufc_user',
+    host: process.env.DB_HOST || 'localhost',
+    database: process.env.DB_NAME || 'ufc_app',
+    password: process.env.DB_PASSWORD,
+    port: process.env.DB_PORT || 5432,
+});
+
+app.use(express.json());
+
+// ========================================
+// PHASE 4: AUTO-SCHEDULING IMPLEMENTATION
+// ========================================
+
+class SchedulerService {
+    
+    // Calculate turf requirements based on player count
+    static calculateTurfRequirements(playerCount) {
+        if (playerCount <= 12) return 1;      // 6v6
+        if (playerCount <= 16) return 2;      // 7v7, 8v8
+        if (playerCount <= 18) return 3;      // 9v9
+        if (playerCount <= 24) return 2;      // Double 6v6
+        return 3; // Default fallback
+    }
+
+    // Get next game time based on current date
+    static getNextGameTime() {
+        const now = new Date();
+        const dayOfWeek = now.getDay();
+        
+        // Wednesday = 3, Sunday = 0
+        if (dayOfWeek === 3) {
+            const gameTime = new Date(now);
+            gameTime.setHours(20, 30, 0, 0); // 8:30 PM
+            return gameTime;
+        } else if (dayOfWeek === 0) {
+            const gameTime = new Date(now);
+            gameTime.setHours(7, 0, 0, 0); // 7:00 AM
+            return gameTime;
+        }
+        
+        return null;
+    }
+
+    // Main auto-scheduling function
+    static async autoScheduleMatches() {
+        try {
+            const currentTime = new Date();
+            const gameTime = this.getNextGameTime();
+            
+            if (!gameTime) return { success: false, message: 'Not a game day' };
+
+            // Get registered player count
+            const playerCountResult = await pool.query(
+                'SELECT COUNT(*) as count FROM player_registrations WHERE game_date = $1',
+                [gameTime]
+            );
+            const playerCount = parseInt(playerCountResult.rows[0].count);
+
+            if (playerCount < 12) {
+                return { success: false, message: 'Insufficient players (minimum 12)' };
+            }
+
+            // Calculate turf requirements
+            const turfsNeeded = this.calculateTurfRequirements(playerCount);
+
+            // Check turf availability
+            const availableTurfs = await pool.query(
+                `SELECT id, name FROM turfs 
+                 WHERE id NOT IN (
+                     SELECT turf_id FROM turf_bookings 
+                     WHERE booking_date = $1 AND status = 'booked'
+                 ) LIMIT $2`,
+                [gameTime, turfsNeeded]
+            );
+
+            if (availableTurfs.rows.length < turfsNeeded) {
+                return { success: false, message: 'Insufficient turfs available' };
+            }
+
+            // Create match record
+            const matchResult = await pool.query(
+                `INSERT INTO matches (id, game_date, game_time_slot, player_count, status)
+                 VALUES ($1, $2, $3, $4, 'scheduled') RETURNING id`,
+                [
+                    require('crypto').randomUUID(),
+                    gameTime,
+                    gameTime.getDay() === 3 ? 'wednesday_evening' : 'sunday_morning',
+                    playerCount
+                ]
+            );
+
+            const matchId = matchResult.rows[0].id;
+
+            // Book turfs
+            for (const turf of availableTurfs.rows) {
+                await pool.query(
+                    `INSERT INTO turf_bookings (id, turf_id, match_id, booking_date, start_time, end_time, status)
+                     VALUES ($1, $2, $3, $4, $5, $6, 'booked')`,
+                    [
+                        require('crypto').randomUUID(),
+                        turf.id,
+                        matchId,
+                        gameTime,
+                        gameTime.getHours() + ':' + gameTime.getMinutes(),
+                        gameTime.getHours() + 1 + ':' + (gameTime.getMinutes() + 30)
+                    ]
+                );
+            }
+
+            return { 
+                success: true, 
+                matchId, 
+                playerCount, 
+                turfsBooked: availableTurfs.rows.length 
+            };
+
+        } catch (error) {
+            console.error('Auto-scheduling error:', error);
+            return { success: false, message: error.message };
+        }
+    }
+}
+
+// ========================================
+// PHASE 5: TEAM ASSIGNMENT IMPLEMENTATION
+// ========================================
+
+class TeamAssignmentService {
+
+    static TEAMS = {
+        DRAGONS: { name: 'Dragons', color: '#FF4444' },
+        HAWKS: { name: 'Hawks', color: '#FFFFFF' },
+        LIONS: { name: 'Lions', color: '#FFD700' },
+        SHARKS: { name: 'Sharks', color: '#4444FF' }
+    };
+
+    // Get players with their skills and positions
+    static async getPlayersForMatch(matchId) {
+        const result = await pool.query(`
+            SELECT p.id, p.name, p.position, p.skill_rating, p.experience_level
+            FROM players p
+            JOIN player_registrations pr ON p.id = pr.player_id
+            JOIN matches m ON pr.game_date = m.game_date
+            WHERE m.id = $1
+            ORDER BY p.skill_rating DESC
+        `, [matchId]);
+        
+        return result.rows;
+    }
+
+    // Categorize players by position
+    static categorizePlayersByPosition(players) {
+        return {
+            GK: players.filter(p => p.position === 'GK').sort((a, b) => b.skill_rating - a.skill_rating),
+            DEF: players.filter(p => p.position === 'DEF').sort((a, b) => b.skill_rating - a.skill_rating),
+            MID: players.filter(p => p.position === 'MID').sort((a, b) => b.skill_rating - a.skill_rating),
+            FWD: players.filter(p => p.position === 'FWD').sort((a, b) => b.skill_rating - a.skill_rating)
+        };
+    }
+
+    // Snake draft distribution
+    static distributePlayers(playerList, teams, position) {
+        const teamKeys = Object.keys(teams);
+        let teamIndex = 0;
+        let direction = 1; // 1 for forward, -1 for reverse
+
+        for (const player of playerList) {
+            const currentTeam = teamKeys[teamIndex];
+            
+            teams[currentTeam].players.push(player);
+            teams[currentTeam].totalSkill += player.skill_rating;
+            teams[currentTeam].positions[position] = (teams[currentTeam].positions[position] || 0) + 1;
+
+            // Snake draft logic
+            if (teamIndex === 3 && direction === 1) {
+                direction = -1;
+            } else if (teamIndex === 0 && direction === -1) {
+                direction = 1;
+            } else {
+                teamIndex += direction;
+            }
+        }
+    }
+
+    // Calculate team balance variance
+    static calculateSkillVariance(teams) {
+        const teamKeys = Object.keys(teams);
+        const skillTotals = teamKeys.map(key => teams[key].totalSkill);
+        const avgSkill = skillTotals.reduce((a, b) => a + b, 0) / skillTotals.length;
+        const variance = skillTotals.reduce((acc, skill) => acc + Math.pow(skill - avgSkill, 2), 0) / skillTotals.length;
+        return Math.sqrt(variance);
+    }
+
+    // Main team assignment function
+    static async assignTeamsAutomatic(matchId) {
+        try {
+            // Initialize teams
+            const teams = {};
+            Object.keys(this.TEAMS).forEach(teamKey => {
+                teams[teamKey] = {
+                    name: this.TEAMS[teamKey].name,
+                    color: this.TEAMS[teamKey].color,
+                    players: [],
+                    totalSkill: 0,
+                    positions: {}
+                };
+            });
+
+            // Get players for this match
+            const players = await this.getPlayersForMatch(matchId);
+            
+            if (players.length < 12) {
+                throw new Error('Insufficient players for team assignment (minimum 12)');
+            }
+
+            // Categorize by position
+            const playersByPosition = this.categorizePlayersByPosition(players);
+
+            // Distribute players using snake draft
+            this.distributePlayers(playersByPosition.GK, teams, 'GK');
+            this.distributePlayers(playersByPosition.DEF, teams, 'DEF');
+            this.distributePlayers(playersByPosition.MID, teams, 'MID');
+            this.distributePlayers(playersByPosition.FWD, teams, 'FWD');
+
+            // Save team assignments to database
+            await this.saveTeamAssignments(matchId, teams);
+
+            return {
+                success: true,
+                teams,
+                balance: this.calculateSkillVariance(teams)
+            };
+
+        } catch (error) {
+            console.error('Team assignment error:', error);
+            return { success: false, message: error.message };
+        }
+    }
+
+    // Save team assignments to database
+    static async saveTeamAssignments(matchId, teams) {
+        const client = await pool.connect();
+        
+        try {
+            await client.query('BEGIN');
+
+            // Clear existing assignments for this match
+            await client.query('DELETE FROM team_assignments WHERE match_id = $1', [matchId]);
+
+            // Insert new assignments
+            for (const [teamKey, teamData] of Object.entries(teams)) {
+                // Get or create team
+                const teamResult = await client.query(
+                    'INSERT INTO teams (id, name, color_code) VALUES ($1, $2, $3) ON CONFLICT (name) DO UPDATE SET color_code = $3 RETURNING id',
+                    [require('crypto').randomUUID(), teamData.name, teamData.color]
+                );
+                const teamId = teamResult.rows[0].id;
+
+                // Assign players to team
+                for (const player of teamData.players) {
+                    await client.query(
+                        `INSERT INTO team_assignments (id, match_id, player_id, team_id, assignment_method)
+                         VALUES ($1, $2, $3, $4, 'auto')`,
+                        [require('crypto').randomUUID(), matchId, player.id, teamId]
+                    );
+                }
+            }
+
+            await client.query('COMMIT');
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    // Admin override function
+    static async overridePlayerAssignment(matchId, playerId, newTeamId, adminId, reason) {
+        const client = await pool.connect();
+        
+        try {
+            await client.query('BEGIN');
+
+            // Get current assignment
+            const currentAssignment = await client.query(
+                'SELECT team_id FROM team_assignments WHERE match_id = $1 AND player_id = $2',
+                [matchId, playerId]
+            );
+
+            if (currentAssignment.rows.length === 0) {
+                throw new Error('Player assignment not found');
+            }
+
+            const oldTeamId = currentAssignment.rows[0].team_id;
+
+            // Log the override
+            await client.query(
+                `INSERT INTO admin_overrides (id, match_id, player_id, old_team_id, new_team_id, admin_id, reason)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [require('crypto').randomUUID(), matchId, playerId, oldTeamId, newTeamId, adminId, reason]
+            );
+
+            // Update the assignment
+            await client.query(
+                'UPDATE team_assignments SET team_id = $1, assignment_method = $2, assigned_by = $3 WHERE match_id = $4 AND player_id = $5',
+                [newTeamId, 'admin_override', adminId, matchId, playerId]
+            );
+
+            await client.query('COMMIT');
+            return { success: true, message: 'Player assignment updated successfully' };
+
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+}
+
+// ========================================
+// API ROUTES
+// ========================================
+
+// Phase 4 Routes - Scheduling
+app.post('/api/schedule/auto-create', async (req, res) => {
+    const result = await SchedulerService.autoScheduleMatches();
+    res.json(result);
+});
+
+app.get('/api/schedule/next-game', async (req, res) => {
+    const gameTime = SchedulerService.getNextGameTime();
+    res.json({ nextGame: gameTime });
+});
+
+// Phase 5 Routes - Team Assignment
+app.post('/api/matches/:matchId/teams/assign-auto', async (req, res) => {
+    const { matchId } = req.params;
+    const result = await TeamAssignmentService.assignTeamsAutomatic(matchId);
+    res.json(result);
+});
+
+app.get('/api/matches/:matchId/teams', async (req, res) => {
+    const { matchId } = req.params;
+    
+    try {
+        const result = await pool.query(`
+            SELECT t.name, t.color_code, p.name as player_name, p.position, p.skill_rating
+            FROM team_assignments ta
+            JOIN teams t ON ta.team_id = t.id
+            JOIN players p ON ta.player_id = p.id
+            WHERE ta.match_id = $1
+            ORDER BY t.name, p.position, p.skill_rating DESC
+        `, [matchId]);
+
+        // Group by teams
+        const teams = {};
+        result.rows.forEach(row => {
+            if (!teams[row.name]) {
+                teams[row.name] = {
+                    name: row.name,
+                    color: row.color_code,
+                    players: []
+                };
+            }
+            teams[row.name].players.push({
+                name: row.player_name,
+                position: row.position,
+                skillRating: row.skill_rating
+            });
+        });
+
+        res.json(teams);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/admin/teams/override', async (req, res) => {
+    const { matchId, playerId, newTeamId, adminId, reason } = req.body;
+    
+    try {
+        const result = await TeamAssignmentService.overridePlayerAssignment(
+            matchId, playerId, newTeamId, adminId, reason
+        );
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ========================================
+// CRON JOBS
+// ========================================
+
+// Wednesday scheduling: Run at 6:00 PM (2.5 hours before game)
+cron.schedule('0 18 * * 3', async () => {
+    console.log('Running Wednesday auto-scheduling...');
+    const result = await SchedulerService.autoScheduleMatches();
+    console.log('Wednesday scheduling result:', result);
+});
+
+// Sunday scheduling: Run at 5:00 AM (2 hours before game)
+cron.schedule('0 5 * * 0', async () => {
+    console.log('Running Sunday auto-scheduling...');
+    const result = await SchedulerService.autoScheduleMatches();
+    console.log('Sunday scheduling result:', result);
+});
+
+// ========================================
+// SERVER STARTUP
+// ========================================
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+    console.log(`UFC App Backend running on port ${PORT}`);
+    console.log('Cron jobs scheduled for auto-scheduling');
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'healthy', 
+        timestamp: new Date().toISOString(),
+        services: ['scheduler', 'team-assignment', 'database']
+    });
+});
+
+module.exports = { app, SchedulerService, TeamAssignmentService };
