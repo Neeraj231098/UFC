@@ -1,0 +1,554 @@
+// routes/auth.js - Authentication Routes
+const express = require('express');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const rateLimit = require('express-rate-limit');
+const router = express.Router();
+
+// Rate limiting for auth endpoints
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // 5 attempts per IP
+  message: { error: 'Too many login attempts, please try again later' }
+});
+
+// Register new user
+router.post('/register', authLimiter, async (req, res) => {
+  const db = req.app.locals.db;
+  
+  try {
+    const { email, phone, password, fullName, dateOfBirth, skillLevel, position } = req.body;
+    
+    // Validation
+    if (!email || !phone || !password || !fullName || !dateOfBirth) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    
+    // Check if user exists
+    const existingUser = await db.query(
+      'SELECT id FROM users WHERE email = $1 OR phone = $2',
+      [email, phone]
+    );
+    
+    if (existingUser.rows.length > 0) {
+      return res.status(409).json({ error: 'User already exists with this email or phone' });
+    }
+    
+    // Hash password
+    const saltRounds = 12;
+    const passwordHash = await bcrypt.hash(password, saltRounds);
+    
+    // Insert user
+    const result = await db.query(`
+      INSERT INTO users (email, phone, password_hash, full_name, date_of_birth, skill_level, position)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING id, email, full_name, skill_level, position, created_at
+    `, [email, phone, passwordHash, fullName, dateOfBirth, skillLevel || 5, position]);
+    
+    const user = result.rows[0];
+    
+    // Generate JWT
+    const token = jwt.sign(
+      { userId: user.id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+    
+    res.status(201).json({
+      message: 'User registered successfully',
+      user: {
+        id: user.id,
+        email: user.email,
+        fullName: user.full_name,
+        skillLevel: user.skill_level,
+        position: user.position
+      },
+      token
+    });
+    
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ error: 'Registration failed' });
+  }
+});
+
+// Login user
+router.post('/login', authLimiter, async (req, res) => {
+  const db = req.app.locals.db;
+  
+  try {
+    const { email, password } = req.body;
+    
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password required' });
+    }
+    
+    // Get user
+    const result = await db.query(`
+      SELECT id, email, password_hash, full_name, skill_level, position, is_admin, is_active
+      FROM users 
+      WHERE email = $1
+    `, [email]);
+    
+    if (result.rows.length === 0) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    
+    const user = result.rows[0];
+    
+    if (!user.is_active) {
+      return res.status(403).json({ error: 'Account is deactivated' });
+    }
+    
+    // Verify password
+    const isValid = await bcrypt.compare(password, user.password_hash);
+    if (!isValid) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    
+    // Update last active date
+    await db.query('UPDATE users SET last_active_date = CURRENT_DATE WHERE id = $1', [user.id]);
+    
+    // Generate JWT
+    const token = jwt.sign(
+      { userId: user.id, email: user.email, isAdmin: user.is_admin },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+    
+    res.json({
+      message: 'Login successful',
+      user: {
+        id: user.id,
+        email: user.email,
+        fullName: user.full_name,
+        skillLevel: user.skill_level,
+        position: user.position,
+        isAdmin: user.is_admin
+      },
+      token
+    });
+    
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// Verify token
+router.get('/verify', authenticateToken, async (req, res) => {
+  const db = req.app.locals.db;
+  
+  try {
+    const result = await db.query(`
+      SELECT id, email, full_name, skill_level, position, is_admin
+      FROM users 
+      WHERE id = $1 AND is_active = true
+    `, [req.user.userId]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    const user = result.rows[0];
+    res.json({
+      user: {
+        id: user.id,
+        email: user.email,
+        fullName: user.full_name,
+        skillLevel: user.skill_level,
+        position: user.position,
+        isAdmin: user.is_admin
+      }
+    });
+    
+  } catch (error) {
+    console.error('Token verification error:', error);
+    res.status(500).json({ error: 'Verification failed' });
+  }
+});
+
+// Middleware to authenticate JWT token
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  
+  if (!token) {
+    return res.status(401).json({ error: 'Access token required' });
+  }
+  
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: 'Invalid or expired token' });
+    }
+    req.user = user;
+    next();
+  });
+}
+
+module.exports = router;
+module.exports.authenticateToken = authenticateToken;
+
+// routes/bookings.js - Booking Management Routes
+const express = require('express');
+const { authenticateToken } = require('./auth');
+const AutoScheduler = require('../services/autoScheduler');
+const router = express.Router();
+
+// All routes require authentication
+router.use(authenticateToken);
+
+// Get all bookings (with filters)
+router.get('/', async (req, res) => {
+  const db = req.app.locals.db;
+  
+  try {
+    const { 
+      date, 
+      status, 
+      turf_id, 
+      user_id, 
+      from_date, 
+      to_date,
+      limit = 50,
+      offset = 0 
+    } = req.query;
+    
+    let query = `
+      SELECT 
+        b.*,
+        t.name as turf_name,
+        t.location as turf_location,
+        t.capacity as turf_capacity,
+        COUNT(ta.id) as assigned_players
+      FROM bookings b
+      JOIN turfs t ON b.turf_id = t.id
+      LEFT JOIN team_assignments ta ON b.id = ta.booking_id
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    let paramCount = 0;
+    
+    if (date) {
+      query += ` AND b.booking_date = ${++paramCount}`;
+      params.push(date);
+    }
+    
+    if (from_date && to_date) {
+      query += ` AND b.booking_date BETWEEN ${++paramCount} AND ${++paramCount}`;
+      params.push(from_date, to_date);
+    }
+    
+    if (status) {
+      query += ` AND b.status = ${++paramCount}`;
+      params.push(status);
+    }
+    
+    if (turf_id) {
+      query += ` AND b.turf_id = ${++paramCount}`;
+      params.push(turf_id);
+    }
+    
+    if (user_id) {
+      query += ` AND EXISTS (
+        SELECT 1 FROM team_assignments ta 
+        WHERE ta.booking_id = b.id AND ta.user_id = ${++paramCount}
+      )`;
+      params.push(user_id);
+    }
+    
+    query += `
+      GROUP BY b.id, t.name, t.location, t.capacity
+      ORDER BY b.booking_date DESC, b.start_time DESC
+      LIMIT ${++paramCount} OFFSET ${++paramCount}
+    `;
+    params.push(limit, offset);
+    
+    const result = await db.query(query, params);
+    
+    res.json({
+      bookings: result.rows,
+      count: result.rows.length,
+      hasMore: result.rows.length == limit
+    });
+    
+  } catch (error) {
+    console.error('Get bookings error:', error);
+    res.status(500).json({ error: 'Failed to fetch bookings' });
+  }
+});
+
+// Get single booking with full details
+router.get('/:id', async (req, res) => {
+  const db = req.app.locals.db;
+  
+  try {
+    const { id } = req.params;
+    
+    // Get booking details
+    const bookingResult = await db.query(`
+      SELECT 
+        b.*,
+        t.name as turf_name,
+        t.location as turf_location,
+        t.capacity as turf_capacity,
+        t.facilities as turf_facilities
+      FROM bookings b
+      JOIN turfs t ON b.turf_id = t.id
+      WHERE b.id = $1
+    `, [id]);
+    
+    if (bookingResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+    
+    const booking = bookingResult.rows[0];
+    
+    // Get team assignments
+    const assignmentsResult = await db.query(`
+      SELECT 
+        ta.*,
+        u.full_name,
+        u.skill_level,
+        u.position,
+        team.name as team_name,
+        team.color_code as team_color
+      FROM team_assignments ta
+      JOIN users u ON ta.user_id = u.id
+      JOIN teams team ON ta.team_id = team.id
+      WHERE ta.booking_id = $1
+      ORDER BY team.name, u.full_name
+    `, [id]);
+    
+    booking.team_assignments = assignmentsResult.rows;
+    
+    res.json({ booking });
+    
+  } catch (error) {
+    console.error('Get booking error:', error);
+    res.status(500).json({ error: 'Failed to fetch booking details' });
+  }
+});
+
+// Create manual booking (admin only)
+router.post('/', requireAdmin, async (req, res) => {
+  const db = req.app.locals.db;
+  
+  try {
+    const {
+      turf_id,
+      booking_date,
+      start_time,
+      end_time,
+      notes
+    } = req.body;
+    
+    // Validation
+    if (!turf_id || !booking_date || !start_time || !end_time) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    
+    // Check turf availability
+    const availabilityCheck = await db.query(`
+      SELECT id FROM turf_availability
+      WHERE turf_id = $1 AND date = $2 AND start_time = $3 AND end_time = $4 AND is_available = true
+    `, [turf_id, booking_date, start_time, end_time]);
+    
+    if (availabilityCheck.rows.length === 0) {
+      return res.status(409).json({ error: 'Turf not available for selected time slot' });
+    }
+    
+    // Check for existing booking
+    const existingBooking = await db.query(`
+      SELECT id FROM bookings
+      WHERE turf_id = $1 AND booking_date = $2 AND start_time = $3 AND status != 'cancelled'
+    `, [turf_id, booking_date, start_time]);
+    
+    if (existingBooking.rows.length > 0) {
+      return res.status(409).json({ error: 'Booking already exists for this slot' });
+    }
+    
+    // Get turf hourly rate
+    const turfResult = await db.query('SELECT hourly_rate FROM turfs WHERE id = $1', [turf_id]);
+    const hourlyRate = turfResult.rows[0].hourly_rate;
+    
+    // Calculate duration and cost
+    const startDate = new Date(`2000-01-01T${start_time}`);
+    const endDate = new Date(`2000-01-01T${end_time}`);
+    const durationHours = (endDate - startDate) / (1000 * 60 * 60);
+    const totalCost = hourlyRate * durationHours;
+    
+    // Create booking
+    const result = await db.query(`
+      INSERT INTO bookings (turf_id, booking_date, start_time, end_time, total_cost, booking_type, notes, created_by)
+      VALUES ($1, $2, $3, $4, $5, 'manual', $6, $7)
+      RETURNING *
+    `, [turf_id, booking_date, start_time, end_time, totalCost, notes, req.user.userId]);
+    
+    const booking = result.rows[0];
+    
+    res.status(201).json({
+      message: 'Manual booking created successfully',
+      booking
+    });
+    
+  } catch (error) {
+    console.error('Create booking error:', error);
+    res.status(500).json({ error: 'Failed to create booking' });
+  }
+});
+
+// Trigger auto-scheduling (admin only)
+router.post('/auto-schedule', requireAdmin, async (req, res) => {
+  try {
+    const db = req.app.locals.db;
+    const autoScheduler = new AutoScheduler(db);
+    
+    const { date, force = false } = req.body;
+    const targetDate = date || new Date().toISOString().split('T')[0];
+    
+    console.log(`Manual auto-scheduling triggered for ${targetDate}`);
+    
+    const result = await autoScheduler.scheduleDayBookings(targetDate, force);
+    
+    res.json({
+      message: 'Auto-scheduling completed',
+      date: targetDate,
+      result
+    });
+    
+  } catch (error) {
+    console.error('Auto-scheduling error:', error);
+    res.status(500).json({ 
+      error: 'Auto-scheduling failed',
+      details: error.message 
+    });
+  }
+});
+
+// Cancel booking
+router.patch('/:id/cancel', async (req, res) => {
+  const db = req.app.locals.db;
+  
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    
+    // Check if booking exists and user has permission
+    const bookingResult = await db.query(`
+      SELECT b.*, ta.user_id
+      FROM bookings b
+      LEFT JOIN team_assignments ta ON b.id = ta.booking_id AND ta.user_id = $1
+      WHERE b.id = $2
+    `, [req.user.userId, id]);
+    
+    if (bookingResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+    
+    const booking = bookingResult.rows[0];
+    
+    // Check permissions (admin or assigned player)
+    if (!req.user.isAdmin && !booking.user_id) {
+      return res.status(403).json({ error: 'Not authorized to cancel this booking' });
+    }
+    
+    if (booking.status === 'cancelled') {
+      return res.status(400).json({ error: 'Booking is already cancelled' });
+    }
+    
+    // Cancel booking
+    await db.query(`
+      UPDATE bookings 
+      SET status = 'cancelled', notes = COALESCE(notes || E'\n', '') || $1, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $2
+    `, [`Cancelled: ${reason || 'No reason provided'}`, id]);
+    
+    // Update team assignments
+    await db.query(`
+      UPDATE team_assignments 
+      SET attendance_status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+      WHERE booking_id = $1
+    `, [id]);
+    
+    res.json({ message: 'Booking cancelled successfully' });
+    
+  } catch (error) {
+    console.error('Cancel booking error:', error);
+    res.status(500).json({ error: 'Failed to cancel booking' });
+  }
+});
+
+// Update attendance after game
+router.patch('/:id/attendance', async (req, res) => {
+  const db = req.app.locals.db;
+  
+  try {
+    const { id } = req.params;
+    const { attendance, weather_condition, game_quality_rating, notes } = req.body;
+    
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    
+    // Update booking
+    await db.query(`
+      UPDATE bookings 
+      SET 
+        status = 'completed',
+        attendance_count = $1,
+        weather_condition = $2,
+        game_quality_rating = $3,
+        notes = COALESCE(notes, '') || $4,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = $5 AND booking_date <= CURRENT_DATE
+    `, [attendance?.length || 0, weather_condition, game_quality_rating, notes ? `\n${notes}` : '', id]);
+    
+    // Update individual attendance
+    if (attendance && Array.isArray(attendance)) {
+      for (const record of attendance) {
+        await db.query(`
+          UPDATE team_assignments
+          SET 
+            attendance_status = $1,
+            performance_rating = $2,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE booking_id = $3 AND user_id = $4
+        `, [record.status, record.performance_rating, id, record.user_id]);
+        
+        // Update user stats if present
+        if (record.status === 'present') {
+          await db.query(`
+            UPDATE users 
+            SET 
+              total_games_played = total_games_played + 1,
+              average_rating = (
+                CASE 
+                  WHEN total_games_played = 0 THEN $1
+                  ELSE ((average_rating * total_games_played) + $1) / (total_games_played + 1)
+                END
+              )
+            WHERE id = $2
+          `, [record.performance_rating || 0, record.user_id]);
+        }
+      }
+    }
+    
+    res.json({ message: 'Attendance updated successfully' });
+    
+  } catch (error) {
+    console.error('Update attendance error:', error);
+    res.status(500).json({ error: 'Failed to update attendance' });
+  }
+});
+
+// Middleware to require admin access
+function requireAdmin(req, res, next) {
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  next();
+}
+
+module.exports = router;
