@@ -1,4 +1,18 @@
-// Database Schema Design
+🏗️ System Overview
+The UFC management app will be a mobile-first Progressive Web App (PWA) with real-time capabilities, supporting three user types with distinct permissions and workflows.
+👥 User Types & Permissions
+1. Admins (Full Access + Can Play)
+Permissions: Create/manage matches, turf booking, payment oversight, user management
+Features: Dashboard analytics, team override, attendance tracking, financial reports
+Play Capability: Can register for matches like regular members
+2. Registered Members (Core Users)
+Permissions: Join matches, view attendance, manage payments, team assignments
+Features: Personal stats, payment history, match calendar, profile management
+3. One-time Players (Guest Access)
+Permissions: Join specific matches, make payments, limited profile
+Features: Temporary access, basic payment tracking, match-specific notifications
+
+Database Schema Design
 -- Key Tables Structure
 Users (id, email, name, phone, role, created_at)
 Members (user_id, membership_status, skill_level, attendance_rate)
