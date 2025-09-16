@@ -1,0 +1,276 @@
+-- UFC App Database Schema Setup
+-- Run this script to create all required tables
+
+-- ========================================
+-- CORE TABLES
+-- ========================================
+
+-- Players table
+CREATE TABLE IF NOT EXISTS players (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(150) UNIQUE NOT NULL,
+    phone VARCHAR(20),
+    position VARCHAR(10) CHECK (position IN ('GK', 'DEF', 'MID', 'FWD')),
+    skill_rating DECIMAL(3,1) DEFAULT 5.0 CHECK (skill_rating >= 1.0 AND skill_rating <= 10.0),
+    experience_level VARCHAR(20) DEFAULT 'beginner' CHECK (experience_level IN ('beginner', 'intermediate', 'advanced', 'pro')),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Turfs table
+CREATE TABLE IF NOT EXISTS turfs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(100) NOT NULL,
+    location TEXT,
+    capacity INTEGER DEFAULT 22,
+    hourly_rate DECIMAL(10,2),
+    contact_info TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Teams table
+CREATE TABLE IF NOT EXISTS teams (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(50) UNIQUE NOT NULL,
+    color_code VARCHAR(7) NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ========================================
+-- PHASE 4: SCHEDULING TABLES
+-- ========================================
+
+-- Matches table
+CREATE TABLE IF NOT EXISTS matches (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    game_date TIMESTAMP NOT NULL,
+    game_time_slot VARCHAR(20) CHECK (game_time_slot IN ('wednesday_evening', 'sunday_morning')),
+    player_count INTEGER,
+    match_type VARCHAR(10),
+    status VARCHAR(20) DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'ongoing', 'completed', 'cancelled')),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Turf bookings table
+CREATE TABLE IF NOT EXISTS turf_bookings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    turf_id UUID REFERENCES turfs(id) ON DELETE CASCADE,
+    match_id UUID REFERENCES matches(id) ON DELETE CASCADE,
+    booking_date TIMESTAMP NOT NULL,
+    start_time TIME NOT NULL,
+    end_time TIME NOT NULL,
+    status VARCHAR(20) DEFAULT 'booked' CHECK (status IN ('booked', 'confirmed', 'cancelled')),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Player registrations for matches
+CREATE TABLE IF NOT EXISTS player_registrations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    player_id UUID REFERENCES players(id) ON DELETE CASCADE,
+    game_date TIMESTAMP NOT NULL,
+    registered_at TIMESTAMP DEFAULT NOW(),
+    status VARCHAR(20) DEFAULT 'registered' CHECK (status IN ('registered', 'cancelled')),
+    UNIQUE(player_id, game_date)
+);
+
+-- ========================================
+-- PHASE 5: TEAM ASSIGNMENT TABLES
+-- ========================================
+
+-- Team assignments table
+CREATE TABLE IF NOT EXISTS team_assignments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    match_id UUID REFERENCES matches(id) ON DELETE CASCADE,
+    player_id UUID REFERENCES players(id) ON DELETE CASCADE,
+    team_id UUID REFERENCES teams(id) ON DELETE CASCADE,
+    assignment_method VARCHAR(20) DEFAULT 'auto' CHECK (assignment_method IN ('auto', 'admin_override')),
+    assigned_by UUID REFERENCES players(id), -- admin user id for overrides
+    assigned_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(match_id, player_id) -- One assignment per player per match
+);
+
+-- Admin overrides log table
+CREATE TABLE IF NOT EXISTS admin_overrides (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    match_id UUID REFERENCES matches(id) ON DELETE CASCADE,
+    player_id UUID REFERENCES players(id) ON DELETE CASCADE,
+    old_team_id UUID REFERENCES teams(id),
+    new_team_id UUID REFERENCES teams(id),
+    admin_id UUID REFERENCES players(id), -- assuming admins are also players
+    reason TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ========================================
+-- INDEXES FOR PERFORMANCE
+-- ========================================
+
+-- Scheduling indexes
+CREATE INDEX IF NOT EXISTS idx_matches_game_date ON matches(game_date);
+CREATE INDEX IF NOT EXISTS idx_matches_status ON matches(status);
+CREATE INDEX IF NOT EXISTS idx_turf_bookings_date ON turf_bookings(booking_date);
+CREATE INDEX IF NOT EXISTS idx_player_registrations_game_date ON player_registrations(game_date);
+
+-- Team assignment indexes
+CREATE INDEX IF NOT EXISTS idx_team_assignments_match ON team_assignments(match_id);
+CREATE INDEX IF NOT EXISTS idx_team_assignments_player ON team_assignments(player_id);
+CREATE INDEX IF NOT EXISTS idx_team_assignments_team ON team_assignments(team_id);
+
+-- Player indexes
+CREATE INDEX IF NOT EXISTS idx_players_position ON players(position);
+CREATE INDEX IF NOT EXISTS idx_players_skill_rating ON players(skill_rating);
+
+-- ========================================
+-- SEED DATA
+-- ========================================
+
+-- Insert default teams
+INSERT INTO teams (name, color_code) VALUES 
+    ('Dragons', '#FF4444'),
+    ('Hawks', '#FFFFFF'),
+    ('Lions', '#FFD700'),
+    ('Sharks', '#4444FF')
+ON CONFLICT (name) DO NOTHING;
+
+-- Insert sample turfs
+INSERT INTO turfs (name, location, capacity, hourly_rate) VALUES 
+    ('Turf Arena 1', 'Sports Complex North', 22, 1500.00),
+    ('Turf Arena 2', 'Sports Complex North', 22, 1500.00),
+    ('Turf Arena 3', 'Sports Complex South', 18, 1200.00),
+    ('Turf Arena 4', 'Sports Complex South', 18, 1200.00)
+ON CONFLICT DO NOTHING;
+
+-- ========================================
+-- SAMPLE DATA FOR TESTING
+-- ========================================
+
+-- Insert sample players (uncomment for testing)
+/*
+INSERT INTO players (name, email, position, skill_rating, experience_level) VALUES 
+    ('John Doe', 'john@example.com', 'GK', 7.5, 'intermediate'),
+    ('Mike Smith', 'mike@example.com', 'DEF', 6.8, 'intermediate'),
+    ('Sarah Johnson', 'sarah@example.com', 'DEF', 7.2, 'advanced'),
+    ('Tom Wilson', 'tom@example.com', 'MID', 8.1, 'advanced'),
+    ('Lisa Brown', 'lisa@example.com', 'MID', 6.9, 'intermediate'),
+    ('David Lee', 'david@example.com', 'MID', 7.8, 'advanced'),
+    ('Emma Davis', 'emma@example.com', 'FWD', 8.5, 'pro'),
+    ('Chris Taylor', 'chris@example.com', 'FWD', 7.1, 'intermediate'),
+    ('Alex Rodriguez', 'alex@example.com', 'GK', 6.5, 'beginner'),
+    ('Jessica White', 'jessica@example.com', 'DEF', 7.9, 'advanced'),
+    ('Ryan Garcia', 'ryan@example.com', 'DEF', 6.2, 'beginner'),
+    ('Maria Martinez', 'maria@example.com', 'MID', 7.6, 'intermediate'),
+    ('Kevin Anderson', 'kevin@example.com', 'MID', 8.3, 'pro'),
+    ('Amy Thompson', 'amy@example.com', 'FWD', 7.4, 'intermediate'),
+    ('Steve Miller', 'steve@example.com', 'FWD', 6.7, 'beginner'),
+    ('Rachel Green', 'rachel@example.com', 'DEF', 8.0, 'advanced')
+ON CONFLICT (email) DO NOTHING;
+*/
+
+-- ========================================
+-- VIEWS FOR EASY DATA ACCESS
+-- ========================================
+
+-- View for match details with team counts
+CREATE OR REPLACE VIEW match_details AS
+SELECT 
+    m.id,
+    m.game_date,
+    m.game_time_slot,
+    m.player_count,
+    m.status,
+    COUNT(DISTINCT ta.team_id) as teams_assigned,
+    COUNT(DISTINCT tb.turf_id) as turfs_booked
+FROM matches m
+LEFT JOIN team_assignments ta ON m.id = ta.match_id
+LEFT JOIN turf_bookings tb ON m.id = tb.match_id
+GROUP BY m.id, m.game_date, m.game_time_slot, m.player_count, m.status;
+
+-- View for team balance report
+CREATE OR REPLACE VIEW team_balance_report AS
+SELECT 
+    m.id as match_id,
+    m.game_date,
+    t.name as team_name,
+    t.color_code,
+    COUNT(ta.player_id) as player_count,
+    AVG(p.skill_rating) as avg_skill,
+    COUNT(CASE WHEN p.position = 'GK' THEN 1 END) as goalkeepers,
+    COUNT(CASE WHEN p.position = 'DEF' THEN 1 END) as defenders,
+    COUNT(CASE WHEN p.position = 'MID' THEN 1 END) as midfielders,
+    COUNT(CASE WHEN p.position = 'FWD' THEN 1 END) as forwards
+FROM matches m
+JOIN team_assignments ta ON m.id = ta.match_id
+JOIN teams t ON ta.team_id = t.id
+JOIN players p ON ta.player_id = p.id
+GROUP BY m.id, m.game_date, t.id, t.name, t.color_code
+ORDER BY m.game_date DESC, t.name;
+
+-- ========================================
+-- FUNCTIONS FOR COMMON OPERATIONS
+-- ========================================
+
+-- Function to get available turfs for a specific date/time
+CREATE OR REPLACE FUNCTION get_available_turfs(check_date TIMESTAMP, required_count INTEGER DEFAULT 1)
+RETURNS TABLE(turf_id UUID, turf_name VARCHAR, capacity INTEGER) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT t.id, t.name, t.capacity
+    FROM turfs t
+    WHERE t.id NOT IN (
+        SELECT tb.turf_id
+        FROM turf_bookings tb
+        WHERE tb.booking_date = check_date
+        AND tb.status = 'booked'
+    )
+    LIMIT required_count;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Function to calculate team balance score
+CREATE OR REPLACE FUNCTION calculate_team_balance(match_uuid UUID)
+RETURNS TABLE(team_name VARCHAR, balance_score DECIMAL) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        t.name,
+        ROUND(AVG(p.skill_rating), 2) as balance_score
+    FROM team_assignments ta
+    JOIN teams t ON ta.team_id = t.id
+    JOIN players p ON ta.player_id = p.id
+    WHERE ta.match_id = match_uuid
+    GROUP BY t.id, t.name
+    ORDER BY balance_score DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ========================================
+-- TRIGGERS FOR DATA INTEGRITY
+-- ========================================
+
+-- Update timestamp trigger function
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Apply updated_at trigger to relevant tables
+CREATE TRIGGER update_players_updated_at BEFORE UPDATE ON players
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_matches_updated_at BEFORE UPDATE ON matches
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ========================================
+-- PERMISSIONS (Adjust based on your setup)
+-- ========================================
+
+-- Grant permissions to application user
+-- GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ufc_app_user;
+-- GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ufc_app_user;
+
+COMMENT ON DATABASE ufc_app IS 'UFC Football App Database - Handles scheduling, team assignment, and match management';
