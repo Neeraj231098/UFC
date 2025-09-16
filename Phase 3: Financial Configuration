@@ -1,0 +1,981 @@
+Financial Rules & Constants
+// Financial Configuration
+export const FINANCIAL_RULES = {
+  BASE_DEPOSIT: 2000,           // ₹2000 initial deposit
+  MINIMUM_ACTIVE_BALANCE: 500,  // ₹500 to stay active
+  MINIMUM_MATCH_BALANCE: 350,   // ₹350 to register for match
+  PENALTY_RATES: {
+    NO_SHOW: 200,              // ₹200 for not showing up
+    LATE_ARRIVAL: 100,         // ₹100 for arriving late (>15 mins)
+    EARLY_LEAVE: 150,          // ₹150 for leaving early
+    CANCELLATION_LATE: 100,    // ₹100 for canceling <2 hours before
+    DISRUPTIVE_BEHAVIOR: 300,  // ₹300 for behavioral issues
+  },
+  REFUND_POLICY: {
+    FULL_REFUND_HOURS: 24,     // Full refund if canceled 24h+ before
+    PARTIAL_REFUND_HOURS: 2,   // 50% refund if canceled 2-24h before
+    NO_REFUND_HOURS: 2,        // No refund if canceled <2h before
+  }
+} as const;
+
+
+🏗️ Database Models
+Core Payment Models
+// User Wallet Model
+interface UserWallet {
+  id: string;
+  userId: string;
+  balance: number;              // Current balance
+  totalDeposited: number;       // Lifetime deposits
+  totalSpent: number;          // Lifetime spending
+  totalPenalties: number;      // Lifetime penalties
+  isActive: boolean;           // Balance >= MINIMUM_ACTIVE_BALANCE
+  lastTopupDate: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  
+  // Relations
+  user: User;
+  transactions: WalletTransaction[];
+  matchPayments: MatchPayment[];
+}
+
+// Transaction Model for all wallet activities
+interface WalletTransaction {
+  id: string;
+  walletId: string;
+  type: TransactionType;
+  amount: number;              // Positive for credit, negative for debit
+  balanceAfter: number;        // Balance after this transaction
+  reference: string | null;    // Match ID, penalty ID, etc.
+  description: string;
+  metadata: Record<string, any>; // Additional data
+  processedBy: string | null;  // Admin ID if manually processed
+  status: TransactionStatus;
+  createdAt: Date;
+  
+  // Relations
+  wallet: UserWallet;
+  matchPayment?: MatchPayment;
+  penalty?: Penalty;
+}
+
+enum TransactionType {
+  DEPOSIT = 'DEPOSIT',
+  MATCH_PAYMENT = 'MATCH_PAYMENT',
+  MATCH_REFUND = 'MATCH_REFUND',
+  PENALTY = 'PENALTY',
+  PENALTY_REVERSAL = 'PENALTY_REVERSAL',
+  ADMIN_ADJUSTMENT = 'ADMIN_ADJUSTMENT',
+  BONUS = 'BONUS'
+}
+
+enum TransactionStatus {
+  PENDING = 'PENDING',
+  COMPLETED = 'COMPLETED',
+  FAILED = 'FAILED',
+  REVERSED = 'REVERSED'
+}
+
+// Match Payment Tracking
+interface MatchPayment {
+  id: string;
+  matchId: string;
+  userId: string;
+  walletId: string;
+  amount: number;              // Amount paid by this user
+  status: PaymentStatus;
+  paidAt: Date | null;
+  refundedAt: Date | null;
+  refundAmount: number;
+  transactionId: string;       // Link to wallet transaction
+  
+  // Relations
+  match: Match;
+  user: User;
+  wallet: UserWallet;
+  transaction: WalletTransaction;
+}
+
+enum PaymentStatus {
+  PENDING = 'PENDING',
+  PAID = 'PAID',
+  REFUNDED = 'REFUNDED',
+  PARTIAL_REFUND = 'PARTIAL_REFUND'
+}
+
+// Penalty System
+interface Penalty {
+  id: string;
+  userId: string;
+  matchId: string | null;      // null for non-match penalties
+  type: PenaltyType;
+  amount: number;
+  reason: string;
+  evidence?: string;           // Photos, videos, etc.
+  appliedBy: string;           // Admin ID
+  appliedAt: Date;
+  status: PenaltyStatus;
+  appealReason?: string;
+  reviewedBy?: string;         // Admin ID
+  reviewedAt?: Date;
+  transactionId?: string;      // Link to wallet transaction
+  
+  // Relations
+  user: User;
+  match?: Match;
+  appliedByAdmin: User;
+  transaction?: WalletTransaction;
+}
+
+enum PenaltyType {
+  NO_SHOW = 'NO_SHOW',
+  LATE_ARRIVAL = 'LATE_ARRIVAL',
+  EARLY_LEAVE = 'EARLY_LEAVE',
+  LATE_CANCELLATION = 'LATE_CANCELLATION',
+  DISRUPTIVE_BEHAVIOR = 'DISRUPTIVE_BEHAVIOR',
+  CUSTOM = 'CUSTOM'
+}
+
+enum PenaltyStatus {
+  ACTIVE = 'ACTIVE',
+  APPEALED = 'APPEALED',
+  REVERSED = 'REVERSED',
+  EXPIRED = 'EXPIRED'
+}
+
+// Enhanced Match Model
+interface Match {
+  id: string;
+  title: string;
+  date: Date;
+  time: string;
+  maxPlayers: number;
+  confirmedPlayers: number;
+  totalCost: number;           // Total match cost set by admin
+  costPerPlayer: number;       // Calculated: totalCost / confirmedPlayers
+  status: MatchStatus;
+  registrationDeadline: Date;
+  createdBy: string;           // Admin ID
+  
+  // Financial tracking
+  totalCollected: number;      // Sum of all payments
+  totalRefunded: number;       // Sum of all refunds
+  
+  // Relations
+  registrations: MatchRegistration[];
+  payments: MatchPayment[];
+  penalties: Penalty[];
+}
+
+
+⚙️ Core Payment Logic
+Wallet Service
+import { FINANCIAL_RULES } from './config';
+
+class WalletService {
+  
+  /**
+   * Initialize wallet with base deposit
+   */
+  async createWallet(userId: string, initialDeposit: number = FINANCIAL_RULES.BASE_DEPOSIT) {
+    const wallet = await prisma.userWallet.create({
+      data: {
+        userId,
+        balance: initialDeposit,
+        totalDeposited: initialDeposit,
+        totalSpent: 0,
+        totalPenalties: 0,
+        isActive: initialDeposit >= FINANCIAL_RULES.MINIMUM_ACTIVE_BALANCE
+      }
+    });
+
+    // Create initial deposit transaction
+    await this.createTransaction({
+      walletId: wallet.id,
+      type: TransactionType.DEPOSIT,
+      amount: initialDeposit,
+      balanceAfter: initialDeposit,
+      description: 'Initial deposit'
+    });
+
+    return wallet;
+  }
+
+  /**
+   * Check if user can register for match
+   */
+  async canRegisterForMatch(userId: string): Promise<{canRegister: boolean, reason?: string}> {
+    const wallet = await prisma.userWallet.findUnique({
+      where: { userId }
+    });
+
+    if (!wallet) {
+      return { canRegister: false, reason: 'No wallet found' };
+    }
+
+    if (wallet.balance < FINANCIAL_RULES.MINIMUM_MATCH_BALANCE) {
+      return { 
+        canRegister: false, 
+        reason: `Insufficient balance. Minimum ₹${FINANCIAL_RULES.MINIMUM_MATCH_BALANCE} required` 
+      };
+    }
+
+    if (!wallet.isActive) {
+      return { 
+        canRegister: false, 
+        reason: `Account inactive. Minimum ₹${FINANCIAL_RULES.MINIMUM_ACTIVE_BALANCE} balance required` 
+      };
+    }
+
+    return { canRegister: true };
+  }
+
+  /**
+   * Process match payment
+   */
+  async processMatchPayment(matchId: string, userId: string) {
+    return prisma.$transaction(async (tx) => {
+      // Get match and wallet
+      const match = await tx.match.findUnique({ where: { id: matchId } });
+      const wallet = await tx.userWallet.findUnique({ where: { userId } });
+
+      if (!match || !wallet) {
+        throw new Error('Match or wallet not found');
+      }
+
+      // Check if user can afford the payment
+      if (wallet.balance < match.costPerPlayer) {
+        throw new Error(`Insufficient balance. Required: ₹${match.costPerPlayer}`);
+      }
+
+      // Create payment record
+      const payment = await tx.matchPayment.create({
+        data: {
+          matchId,
+          userId,
+          walletId: wallet.id,
+          amount: match.costPerPlayer,
+          status: PaymentStatus.PAID,
+          paidAt: new Date()
+        }
+      });
+
+      // Update wallet balance
+      const newBalance = wallet.balance - match.costPerPlayer;
+      await tx.userWallet.update({
+        where: { id: wallet.id },
+        data: {
+          balance: newBalance,
+          totalSpent: wallet.totalSpent + match.costPerPlayer,
+          isActive: newBalance >= FINANCIAL_RULES.MINIMUM_ACTIVE_BALANCE
+        }
+      });
+
+      // Create transaction record
+      const transaction = await tx.walletTransaction.create({
+        data: {
+          walletId: wallet.id,
+          type: TransactionType.MATCH_PAYMENT,
+          amount: -match.costPerPlayer,
+          balanceAfter: newBalance,
+          reference: matchId,
+          description: `Payment for match: ${match.title}`,
+          status: TransactionStatus.COMPLETED,
+          metadata: { matchTitle: match.title, matchDate: match.date }
+        }
+      });
+
+      // Link transaction to payment
+      await tx.matchPayment.update({
+        where: { id: payment.id },
+        data: { transactionId: transaction.id }
+      });
+
+      return { payment, transaction, newBalance };
+    });
+  }
+
+  /**
+   * Process match refund based on cancellation time
+   */
+  async processMatchRefund(matchId: string, userId: string, reason: string = 'Match cancelled') {
+    return prisma.$transaction(async (tx) => {
+      const match = await tx.match.findUnique({ where: { id: matchId } });
+      const payment = await tx.matchPayment.findFirst({
+        where: { matchId, userId, status: PaymentStatus.PAID }
+      });
+      const wallet = await tx.userWallet.findUnique({ where: { userId } });
+
+      if (!match || !payment || !wallet) {
+        throw new Error('Match, payment, or wallet not found');
+      }
+
+      // Calculate refund amount based on timing
+      const hoursUntilMatch = (match.date.getTime() - Date.now()) / (1000 * 60 * 60);
+      let refundAmount = 0;
+      let refundPercentage = 0;
+
+      if (hoursUntilMatch >= FINANCIAL_RULES.REFUND_POLICY.FULL_REFUND_HOURS) {
+        refundAmount = payment.amount;
+        refundPercentage = 100;
+      } else if (hoursUntilMatch >= FINANCIAL_RULES.REFUND_POLICY.PARTIAL_REFUND_HOURS) {
+        refundAmount = payment.amount * 0.5;
+        refundPercentage = 50;
+      } else {
+        refundAmount = 0;
+        refundPercentage = 0;
+      }
+
+      if (refundAmount > 0) {
+        // Update wallet balance
+        const newBalance = wallet.balance + refundAmount;
+        await tx.userWallet.update({
+          where: { id: wallet.id },
+          data: {
+            balance: newBalance,
+            isActive: newBalance >= FINANCIAL_RULES.MINIMUM_ACTIVE_BALANCE
+          }
+        });
+
+        // Create refund transaction
+        await tx.walletTransaction.create({
+          data: {
+            walletId: wallet.id,
+            type: TransactionType.MATCH_REFUND,
+            amount: refundAmount,
+            balanceAfter: newBalance,
+            reference: matchId,
+            description: `${refundPercentage}% refund for: ${match.title} - ${reason}`,
+            status: TransactionStatus.COMPLETED,
+            metadata: { 
+              originalAmount: payment.amount,
+              refundPercentage,
+              reason,
+              hoursUntilMatch: Math.round(hoursUntilMatch)
+            }
+          }
+        });
+
+        // Update payment status
+        await tx.matchPayment.update({
+          where: { id: payment.id },
+          data: {
+            status: refundPercentage === 100 ? PaymentStatus.REFUNDED : PaymentStatus.PARTIAL_REFUND,
+            refundedAt: new Date(),
+            refundAmount
+          }
+        });
+      }
+
+      return { refundAmount, refundPercentage, hoursUntilMatch };
+    });
+  }
+
+  /**
+   * Add money to wallet
+   */
+  async addBalance(userId: string, amount: number, description: string = 'Balance top-up') {
+    return prisma.$transaction(async (tx) => {
+      const wallet = await tx.userWallet.findUnique({ where: { userId } });
+      if (!wallet) throw new Error('Wallet not found');
+
+      const newBalance = wallet.balance + amount;
+      
+      await tx.userWallet.update({
+        where: { id: wallet.id },
+        data: {
+          balance: newBalance,
+          totalDeposited: wallet.totalDeposited + amount,
+          isActive: newBalance >= FINANCIAL_RULES.MINIMUM_ACTIVE_BALANCE,
+          lastTopupDate: new Date()
+        }
+      });
+
+      const transaction = await tx.walletTransaction.create({
+        data: {
+          walletId: wallet.id,
+          type: TransactionType.DEPOSIT,
+          amount,
+          balanceAfter: newBalance,
+          description,
+          status: TransactionStatus.COMPLETED
+        }
+      });
+
+      return { transaction, newBalance };
+    });
+  }
+
+  /**
+   * Get wallet with transaction history
+   */
+  async getWalletDetails(userId: string) {
+    const wallet = await prisma.userWallet.findUnique({
+      where: { userId },
+      include: {
+        transactions: {
+          orderBy: { createdAt: 'desc' },
+          take: 50
+        },
+        matchPayments: {
+          include: { match: true },
+          orderBy: { paidAt: 'desc' }
+        }
+      }
+    });
+
+    if (!wallet) return null;
+
+    // Calculate summary statistics
+    const summary = {
+      currentBalance: wallet.balance,
+      totalDeposited: wallet.totalDeposited,
+      totalSpent: wallet.totalSpent,
+      totalPenalties: wallet.totalPenalties,
+      isActive: wallet.isActive,
+      matchesPlayed: wallet.matchPayments.filter(p => p.status === PaymentStatus.PAID).length,
+      lastTransactionDate: wallet.transactions[0]?.createdAt,
+      canRegisterForMatch: wallet.balance >= FINANCIAL_RULES.MINIMUM_MATCH_BALANCE
+    };
+
+    return { wallet, summary };
+  }
+
+  /**
+   * Create transaction record
+   */
+  private async createTransaction(data: Partial<WalletTransaction>) {
+    return prisma.walletTransaction.create({ data: data as any });
+  }
+}
+
+Match Financial Service
+class MatchFinancialService {
+  
+  /**
+   * Calculate and update cost per player when registrations change
+   */
+  async updateMatchCosts(matchId: string) {
+    return prisma.$transaction(async (tx) => {
+      const match = await tx.match.findUnique({
+        where: { id: matchId },
+        include: { 
+          registrations: { where: { status: 'CONFIRMED' } }
+        }
+      });
+
+      if (!match) throw new Error('Match not found');
+
+      const confirmedPlayers = match.registrations.length;
+      const costPerPlayer = confirmedPlayers > 0 ? Math.round(match.totalCost / confirmedPlayers) : 0;
+
+      await tx.match.update({
+        where: { id: matchId },
+        data: {
+          confirmedPlayers,
+          costPerPlayer
+        }
+      });
+
+      return { confirmedPlayers, costPerPlayer, totalCost: match.totalCost };
+    });
+  }
+
+  /**
+   * Process all payments for a match after final registration
+   */
+  async processMatchPayments(matchId: string) {
+    const match = await prisma.match.findUnique({
+      where: { id: matchId },
+      include: { 
+        registrations: { where: { status: 'CONFIRMED' } }
+      }
+    });
+
+    if (!match) throw new Error('Match not found');
+
+    const results = [];
+    const walletService = new WalletService();
+
+    for (const registration of match.registrations) {
+      try {
+        const result = await walletService.processMatchPayment(matchId, registration.userId);
+        results.push({ userId: registration.userId, success: true, ...result });
+      } catch (error) {
+        results.push({ 
+          userId: registration.userId, 
+          success: false, 
+          error: error.message 
+        });
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Get match financial summary
+   */
+  async getMatchFinancialSummary(matchId: string) {
+    const match = await prisma.match.findUnique({
+      where: { id: matchId },
+      include: {
+        payments: {
+          include: { user: { select: { name: true, email: true } } }
+        },
+        penalties: {
+          include: { user: { select: { name: true, email: true } } }
+        }
+      }
+    });
+
+    if (!match) return null;
+
+    const totalCollected = match.payments
+      .filter(p => p.status === PaymentStatus.PAID)
+      .reduce((sum, p) => sum + p.amount, 0);
+
+    const totalRefunded = match.payments
+      .filter(p => [PaymentStatus.REFUNDED, PaymentStatus.PARTIAL_REFUND].includes(p.status))
+      .reduce((sum, p) => sum + p.refundAmount, 0);
+
+    const totalPenalties = match.penalties
+      .filter(p => p.status === PenaltyStatus.ACTIVE)
+      .reduce((sum, p) => sum + p.amount, 0);
+
+    const netRevenue = totalCollected - totalRefunded + totalPenalties;
+
+    return {
+      match,
+      financial: {
+        totalCost: match.totalCost,
+        costPerPlayer: match.costPerPlayer,
+        confirmedPlayers: match.confirmedPlayers,
+        totalCollected,
+        totalRefunded,
+        totalPenalties,
+        netRevenue,
+        outstandingBalance: match.totalCost - netRevenue
+      },
+      payments: match.payments,
+      penalties: match.penalties
+    };
+  }
+}
+
+Penalty Service
+class PenaltyService {
+  
+  /**
+   * Apply penalty to user
+   */
+  async applyPenalty({
+    userId,
+    matchId,
+    type,
+    customAmount,
+    reason,
+    evidence,
+    appliedBy
+  }: {
+    userId: string;
+    matchId?: string;
+    type: PenaltyType;
+    customAmount?: number;
+    reason: string;
+    evidence?: string;
+    appliedBy: string;
+  }) {
+    return prisma.$transaction(async (tx) => {
+      // Get penalty amount
+      const amount = customAmount || FINANCIAL_RULES.PENALTY_RATES[type] || 0;
+      
+      if (amount <= 0) {
+        throw new Error('Invalid penalty amount');
+      }
+
+      // Create penalty record
+      const penalty = await tx.penalty.create({
+        data: {
+          userId,
+          matchId,
+          type,
+          amount,
+          reason,
+          evidence,
+          appliedBy,
+          status: PenaltyStatus.ACTIVE
+        }
+      });
+
+      // Get user wallet
+      const wallet = await tx.userWallet.findUnique({ where: { userId } });
+      if (!wallet) throw new Error('User wallet not found');
+
+      // Deduct from wallet
+      const newBalance = wallet.balance - amount;
+      await tx.userWallet.update({
+        where: { id: wallet.id },
+        data: {
+          balance: newBalance,
+          totalPenalties: wallet.totalPenalties + amount,
+          isActive: newBalance >= FINANCIAL_RULES.MINIMUM_ACTIVE_BALANCE
+        }
+      });
+
+      // Create transaction record
+      const transaction = await tx.walletTransaction.create({
+        data: {
+          walletId: wallet.id,
+          type: TransactionType.PENALTY,
+          amount: -amount,
+          balanceAfter: newBalance,
+          reference: penalty.id,
+          description: `Penalty: ${reason}`,
+          status: TransactionStatus.COMPLETED,
+          processedBy: appliedBy,
+          metadata: {
+            penaltyType: type,
+            matchId,
+            evidence
+          }
+        }
+      });
+
+      // Link transaction to penalty
+      await tx.penalty.update({
+        where: { id: penalty.id },
+        data: { transactionId: transaction.id }
+      });
+
+      return { penalty, transaction, newBalance };
+    });
+  }
+
+  /**
+   * Reverse a penalty (admin action)
+   */
+  async reversePenalty(penaltyId: string, reviewedBy: string, reason: string) {
+    return prisma.$transaction(async (tx) => {
+      const penalty = await tx.penalty.findUnique({ where: { id: penaltyId } });
+      if (!penalty) throw new Error('Penalty not found');
+
+      if (penalty.status !== PenaltyStatus.ACTIVE) {
+        throw new Error('Penalty cannot be reversed');
+      }
+
+      // Get user wallet
+      const wallet = await tx.userWallet.findUnique({ where: { userId: penalty.userId } });
+      if (!wallet) throw new Error('User wallet not found');
+
+      // Refund penalty amount
+      const newBalance = wallet.balance + penalty.amount;
+      await tx.userWallet.update({
+        where: { id: wallet.id },
+        data: {
+          balance: newBalance,
+          totalPenalties: wallet.totalPenalties - penalty.amount,
+          isActive: newBalance >= FINANCIAL_RULES.MINIMUM_ACTIVE_BALANCE
+        }
+      });
+
+      // Create reversal transaction
+      await tx.walletTransaction.create({
+        data: {
+          walletId: wallet.id,
+          type: TransactionType.PENALTY_REVERSAL,
+          amount: penalty.amount,
+          balanceAfter: newBalance,
+          reference: penalty.id,
+          description: `Penalty reversal: ${reason}`,
+          status: TransactionStatus.COMPLETED,
+          processedBy: reviewedBy,
+          metadata: {
+            originalPenaltyReason: penalty.reason,
+            reversalReason: reason
+          }
+        }
+      });
+
+      // Update penalty status
+      await tx.penalty.update({
+        where: { id: penaltyId },
+        data: {
+          status: PenaltyStatus.REVERSED,
+          reviewedBy,
+          reviewedAt: new Date()
+        }
+      });
+
+      return { newBalance, refundAmount: penalty.amount };
+    });
+  }
+
+  /**
+   * Auto-apply no-show penalties after match
+   */
+  async processNoShowPenalties(matchId: string) {
+    const registrations = await prisma.matchRegistration.findMany({
+      where: {
+        matchId,
+        status: 'CONFIRMED'
+      },
+      include: {
+        attendance: true,
+        user: { select: { name: true } }
+      }
+    });
+
+    const results = [];
+
+    for (const registration of registrations) {
+      // If no attendance record or didn't check in
+      if (!registration.attendance || !registration.attendance.checkedIn) {
+        try {
+          const result = await this.applyPenalty({
+            userId: registration.userId,
+            matchId,
+            type: PenaltyType.NO_SHOW,
+            reason: 'No-show for confirmed match',
+            appliedBy: 'SYSTEM' // System-generated penalty
+          });
+          results.push({
+            userId: registration.userId,
+            userName: registration.user.name,
+            success: true,
+            penaltyAmount: result.penalty.amount
+          });
+        } catch (error) {
+          results.push({
+            userId: registration.userId,
+            userName: registration.user.name,
+            success: false,
+            error: error.message
+          });
+        }
+      }
+    }
+
+    return results;
+  }
+}
+
+
+🛠️ Admin Tools & Dashboard
+Admin Financial Dashboard Component
+// Admin Financial Dashboard
+interface AdminFinancialDashboard {
+  // Overview Stats
+  totalActiveWallets: number;
+  totalBalanceInSystem: number;
+  monthlyRevenue: number;
+  averageWalletBalance: number;
+  inactiveWallets: number;
+  
+  // Transaction Summaries
+  recentTransactions: WalletTransaction[];
+  pendingRefunds: MatchPayment[];
+  recentPenalties: Penalty[];
+  
+  // Match Financial Performance
+  matchRevenue: {
+    matchId: string;
+    matchTitle: string;
+    totalCost: number;
+    collected: number;
+    refunded: number;
+    netRevenue: number;
+  }[];
+}
+
+class AdminFinancialService {
+  
+  /**
+   * Get comprehensive financial dashboard
+   */
+  async getDashboard(dateRange?: { from: Date; to: Date }) {
+    const [
+      walletStats,
+      recentTransactions,
+      pendingRefunds,
+      recentPenalties,
+      matchRevenue
+    ] = await Promise.all([
+      this.getWalletStatistics(dateRange),
+      this.getRecentTransactions(50),
+      this.getPendingRefunds(),
+      this.getRecentPenalties(20),
+      this.getMatchRevenueAnalysis(dateRange)
+    ]);
+
+    return {
+      walletStats,
+      recentTransactions,
+      pendingRefunds,
+      recentPenalties,
+      matchRevenue
+    };
+  }
+
+  /**
+   * Get wallet statistics
+   */
+  private async getWalletStatistics(dateRange?: { from: Date; to: Date }) {
+    const whereClause = dateRange ? {
+      createdAt: {
+        gte: dateRange.from,
+        lte: dateRange.to
+      }
+    } : {};
+
+    const [totalWallets, activeWallets, balanceSum, avgBalance] = await Promise.all([
+      prisma.userWallet.count(),
+      prisma.userWallet.count({ where: { isActive: true } }),
+      prisma.userWallet.aggregate({
+        _sum: { balance: true }
+      }),
+      prisma.userWallet.aggregate({
+        _avg: { balance: true },
+        where: { isActive: true }
+      })
+    ]);
+
+    return {
+      totalWallets,
+      activeWallets,
+      inactiveWallets: totalWallets - activeWallets,
+      totalBalanceInSystem: balanceSum._sum.balance || 0,
+      averageWalletBalance: Math.round(avgBalance._avg.balance || 0)
+    };
+  }
+
+  /**
+   * Manual balance adjustment (admin only)
+   */
+  async adjustBalance({
+    userId,
+    amount,
+    reason,
+    adjustedBy
+  }: {
+    userId: string;
+    amount: number; // Positive for credit, negative for debit
+    reason: string;
+    adjustedBy: string;
+  }) {
+    return prisma.$transaction(async (tx) => {
+      const wallet = await tx.userWallet.findUnique({ where: { userId } });
+      if (!wallet) throw new Error('Wallet not found');
+
+      const newBalance = wallet.balance + amount;
+      
+      // Prevent negative balances unless explicitly allowed
+      if (newBalance < 0) {
+        throw new Error('Adjustment would result in negative balance');
+      }
+
+      await tx.userWallet.update({
+        where: { id: wallet.id },
+        data: {
+          balance: newBalance,
+          isActive: newBalance >= FINANCIAL_RULES.MINIMUM_ACTIVE_BALANCE,
+          ...(amount > 0 && { totalDeposited: wallet.totalDeposited + amount })
+        }
+      });
+
+      const transaction = await tx.walletTransaction.create({
+        data: {
+          walletId: wallet.id,
+          type: TransactionType.ADMIN_ADJUSTMENT,
+          amount,
+          balanceAfter: newBalance,
+          description: `Admin adjustment: ${reason}`,
+          status: TransactionStatus.COMPLETED,
+          processedBy: adjustedBy,
+          metadata: { adminReason: reason }
+        }
+      });
+
+      return { transaction, newBalance };
+    });
+  }
+
+  /**
+   * Bulk wallet operations
+   */
+  async bulkWalletOperation({
+    operation,
+    userIds,
+    amount,
+    reason,
+    executedBy
+  }: {
+    operation: 'CREDIT' | 'DEBIT' | 'BONUS';
+    userIds: string[];
+    amount: number;
+    reason: string;
+    executedBy: string;
+  }) {
+    const results = [];
+    const walletService = new WalletService();
+
+    for (const userId of userIds) {
+      try {
+        let result;
+        switch (operation) {
+          case 'CREDIT':
+            result = await walletService.addBalance(userId, amount, reason);
+            break;
+          case 'DEBIT':
+            result = await this.adjustBalance({
+              userId,
+              amount: -amount,
+              reason,
+              adjustedBy: executedBy
+            });
+            break;
+          case 'BONUS':
+            result = await this.adjustBalance({
+              userId,
+              amount,
+              reason: `Bonus: ${reason}`,
+              adjustedBy: executedBy
+            });
+            break;
+        }
+        results.push({ userId, success: true, newBalance: result.newBalance });
+      } catch (error) {
+        results.push({ userId, success: false, error: error.message });
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Generate financial report
+   */
+  async generateFinancialReport(startDate: Date, endDate: Date) {
+    const transactions = await prisma.walletTransaction.findMany({
+      where: {
+        createdAt: {
+          gte: startDate,
+          lte: endDate
+        }
+      },
+      include: {
+        wallet: {
+          include: { user: { select: { name: true, email: true } } }
+        }
+      }
+    });
+
+    // Group by transaction type
+    const summary = transactions.reduce((acc, tx) => {
+      const type = tx.type;
+      if (!acc[type]) {
+        acc[type] = { count: 0, total: 0 };
+      }
+      acc[type].count++;
+      acc[type].total += Math.abs(tx.amount);
