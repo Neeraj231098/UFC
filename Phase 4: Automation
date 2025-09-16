@@ -1,0 +1,181 @@
+Auto-Scheduling & Turf Booking Backend Logic
+System Architecture Overview
+Core Components
+Scheduler Service - Handles match scheduling
+Turf Manager - Manages turf allocation and booking
+Player Registry - Tracks registered players
+Booking Engine - Coordinates scheduling and turf booking
+
+Flowchart: Auto-Scheduling Logic
+START
+  ↓
+[Check Current Day/Time]
+  ↓
+[Is it Wednesday 6PM or Sunday 5AM?] ──NO──→ [Wait/Schedule Next Check]
+  ↓ YES                                            ↑
+[Query Registered Players Count]                   │
+  ↓                                               │
+[Calculate Required Turfs]                        │
+  ↓                                               │
+[Check Turf Availability]                         │
+  ↓                                               │
+[Available Turfs >= Required?] ──NO──→ [Log Error/Notify Admin]
+  ↓ YES                                           │
+[Book Required Turfs]                             │
+  ↓                                               │
+[Generate Match Schedule]                         │
+  ↓                                               │
+[Send Notifications to Players]                   │
+  ↓                                               │
+[Update Database] ────────────────────────────────┘
+  ↓
+END
+
+
+Pseudocode Implementation
+Main Scheduler Function
+FUNCTION autoScheduleMatches():
+    // Check if it's scheduling time (2 hours before game)
+    currentTime = getCurrentDateTime()
+    
+    IF currentTime == WEDNESDAY_6PM OR currentTime == SUNDAY_5AM:
+        playerCount = getRegisteredPlayerCount()
+        gameTime = getNextGameTime()
+        
+        // Calculate turf requirements
+        turfsNeeded = calculateTurfRequirements(playerCount)
+        
+        // Check turf availability
+        availableTurfs = getTurfAvailability(gameTime)
+        
+        IF availableTurfs.length >= turfsNeeded:
+            // Book turfs
+            bookedTurfs = bookTurfs(turfsNeeded, gameTime)
+            
+            // Generate match schedule
+            matches = generateMatches(playerCount, bookedTurfs)
+            
+            // Save and notify
+            saveMatchSchedule(matches)
+            notifyPlayers(matches)
+            
+            RETURN success
+        ELSE:
+            logError("Insufficient turfs available")
+            notifyAdmin("Turf booking failed")
+            RETURN failure
+    END IF
+END FUNCTION
+
+Turf Calculation Logic
+FUNCTION calculateTurfRequirements(playerCount):
+    turfsNeeded = 0
+    
+    SWITCH playerCount:
+        CASE 12:  // 6v6
+            turfsNeeded = 1
+        CASE 14:  // 7v7
+            turfsNeeded = 2
+        CASE 16:  // 8v8
+            turfsNeeded = 2
+        CASE 18:  // 9v9
+            turfsNeeded = 3
+        CASE 24:  // Double 6v6
+            turfsNeeded = 2
+        DEFAULT:
+            // Handle edge cases
+            IF playerCount <= 12:
+                turfsNeeded = 1
+            ELSE IF playerCount <= 16:
+                turfsNeeded = 2
+            ELSE:
+                turfsNeeded = 3
+    END SWITCH
+    
+    RETURN turfsNeeded
+END FUNCTION
+
+
+Backend API Endpoints
+1. Scheduler Endpoints
+POST /api/schedule/auto-create
+GET  /api/schedule/next-game
+PUT  /api/schedule/{id}/update
+DELETE /api/schedule/{id}/cancel
+
+2. Turf Management Endpoints
+GET  /api/turfs/availability
+POST /api/turfs/book
+PUT  /api/turfs/booking/{id}
+GET  /api/turfs/bookings/active
+
+3. Player Registration Endpoints
+GET  /api/players/registered/count
+GET  /api/players/registered/list
+POST /api/players/register
+DELETE /api/players/{id}/unregister
+
+
+Database Schema Updates
+Matches Table
+CREATE TABLE matches (
+    id UUID PRIMARY KEY,
+    game_date TIMESTAMP,
+    game_time_slot VARCHAR(20), -- 'wednesday_evening' or 'sunday_morning'
+    turf_ids JSON, -- Array of turf IDs
+    player_count INTEGER,
+    match_type VARCHAR(10), -- '6v6', '7v7', '8v8', '9v9'
+    status VARCHAR(20), -- 'scheduled', 'ongoing', 'completed', 'cancelled'
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+Turf Bookings Table
+CREATE TABLE turf_bookings (
+    id UUID PRIMARY KEY,
+    turf_id UUID REFERENCES turfs(id),
+    match_id UUID REFERENCES matches(id),
+    booking_date TIMESTAMP,
+    start_time TIME,
+    end_time TIME,
+    status VARCHAR(20), -- 'booked', 'confirmed', 'cancelled'
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+
+Cron Job Configuration
+Scheduling Times
+Wednesday Games: Schedule at 6:00 PM (2.5 hours before 8:30 PM start)
+Sunday Games: Schedule at 5:00 AM (2 hours before 7:00 AM start)
+Cron Expression
+# Wednesday at 6:00 PM
+0 18 * * 3 /path/to/scheduler/script
+
+# Sunday at 5:00 AM  
+0 5 * * 0 /path/to/scheduler/script
+
+
+Error Handling & Edge Cases
+Common Scenarios
+Insufficient Players: Minimum 12 players required
+No Available Turfs: Notify admin, attempt alternative slots
+Player Cancellations: Auto-reschedule if below minimum
+Weather Conditions: Manual override capability
+Holiday Scheduling: Skip or reschedule logic
+Notification System
+Players: Match schedule, time, turf location
+Admins: Booking failures, system errors
+Turf Owners: Booking confirmations
+
+Testing Strategy
+Unit Tests
+Turf calculation logic
+Player count validation
+Time slot management
+Integration Tests
+Full scheduling workflow
+Database operations
+API endpoint responses
+Load Testing
+Multiple concurrent bookings
+High player count scenarios
