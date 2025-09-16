@@ -1,0 +1,290 @@
+// Database Schema Design
+-- Key Tables Structure
+Users (id, email, name, phone, role, created_at)
+Members (user_id, membership_status, skill_level, attendance_rate)
+Matches (id, date, time, turf_id, max_players, status)
+Match_Registrations (match_id, user_id, registration_type, payment_status)
+Teams (match_id, team_name, players[])
+Turfs (id, name, location, hourly_rate, capacity)
+Payments (id, user_id, match_id, amount, status, payment_method)
+Attendance (match_id, user_id, checked_in, checked_out)
+Notifications (id, user_id, type, content, channels[], sent_at)
+
+API Architecture
+RESTful API with Real-time capabilities:
+• REST endpoints for CRUD operations
+• WebSocket/Socket.io for real-time updates
+• GraphQL (optional for complex queries)
+
+Key API Modules:
+/api/auth          - Authentication & authorization
+/api/users         - User management
+/api/matches       - Match CRUD & scheduling
+/api/teams         - Auto-assignment logic
+/api/payments      - Payment processing
+/api/turfs         - Turf management
+/api/notifications - Notification management
+/api/admin         - Admin-only endpoints
+
+
+Notification Layer (Multi-channel Communication)
+Architecture
+Message Queue System:
+• Bull Queue (Redis-based)
+• Background job processing
+• Retry mechanisms
+• Priority handling
+
+Notification Channels:
+1. WhatsApp Business API
+2. Email Service (SendGrid/AWS SES)
+3. In-app notifications (WebSocket)
+4. Push notifications (PWA)
+
+Notification Types & Triggers
+Match Notifications:
+  - match_created: 24h, 2h before
+  - team_assigned: Immediate
+  - payment_reminder: 24h, 1h before
+  - match_cancelled: Immediate
+
+Payment Notifications:
+  - payment_due: 24h before match
+  - payment_confirmed: Immediate
+  - refund_processed: Immediate
+
+System Notifications:
+  - new_member_joined: Admins only
+  - attendance_summary: Weekly to admins
+  - low_attendance_alert: To user & admins
+
+
+🔧 Core System Features
+1. Match Scheduling System
+// Match Creation Flow
+interface MatchCreation {
+  date: Date
+  time: string
+  duration: number
+  maxPlayers: number
+  matchFee: number
+  turfSelection: 'auto' | 'manual'
+  registrationDeadline: Date
+}
+
+// Auto-scheduling logic
+- Check turf availability
+- Calculate optimal turf size based on registrations
+- Handle recurring match patterns
+- Conflict detection and resolution
+
+2. Smart Turf Booking
+// Dynamic Turf Selection
+interface TurfLogic {
+  playerCount: number
+  preferredLocation?: string
+  budget: number
+  
+  // Logic
+  selectOptimalTurf(): {
+    turfId: string
+    cost: number
+    capacity: number
+    location: string
+  }
+}
+
+// Integration with turf providers
+- Real-time availability checking
+- Dynamic pricing
+- Booking confirmation
+- Cancellation handling
+
+3. Intelligent Team Assignment
+// Auto-assignment Algorithm
+interface TeamAssignment {
+  balancingFactors: {
+    skillLevel: number
+    attendance: number
+    recentPerformance: number
+    personalPreferences?: string[]
+  }
+  
+  constraints: {
+    minPlayersPerTeam: number
+    maxPlayersPerTeam: number
+    avoidSameTeamRepeats: boolean
+  }
+}
+
+// Algorithm priorities:
+1. Skill balance (40%)
+2. Regular attendance (30%)
+3. Recent team history (20%)
+4. Personal requests (10%)
+
+4. Payment System Integration
+// Payment Processing
+interface PaymentSystem {
+  providers: ['Razorpay', 'Stripe', 'PayPal']
+  
+  features: {
+    autoDeduction: boolean
+    walletSystem: boolean
+    refundPolicy: RefundPolicy
+    subscriptionSupport: boolean
+  }
+}
+
+// Wallet System
+- Pre-loaded credits
+- Automatic deductions
+- Low balance alerts
+- Payment history tracking
+
+
+🚀 Deployment & Infrastructure
+Recommended Deployment Stack
+Frontend:
+  - Vercel (Next.js optimized)
+  - Netlify (Alternative)
+  - Cloudflare Pages
+
+Backend:
+  - Railway/Render (Simple deployment)
+  - AWS ECS/EC2 (Scalable)
+  - Google Cloud Run (Serverless)
+
+Database:
+  - Supabase (PostgreSQL + real-time)
+  - PlanetScale (MySQL with branching)
+  - AWS RDS (Traditional)
+
+File Storage:
+  - Cloudinary (Images/videos)
+  - AWS S3 (General storage)
+
+CDN & Performance:
+  - Cloudflare (Global CDN)
+  - AWS CloudFront
+
+Development Workflow
+Environment Setup:
+  - Local: Docker Compose
+  - Staging: Preview deployments
+  - Production: Auto-deployment from main
+
+CI/CD Pipeline:
+  - GitHub Actions
+  - Automated testing
+  - Type checking
+  - Security scanning
+  - Performance monitoring
+
+
+📱 Mobile-First Considerations
+PWA Features
+// PWA Capabilities
+interface PWAFeatures {
+  offline: {
+    cacheMatchData: boolean
+    offlinePayments: boolean
+    syncWhenOnline: boolean
+  }
+  
+  nativeFeatures: {
+    pushNotifications: boolean
+    geolocation: boolean
+    camera: boolean // Profile pictures
+    calendar: boolean // Add to calendar
+  }
+}
+
+Performance Optimizations
+// Performance Strategy
+- Image optimization (Next.js Image)
+- Code splitting by routes
+- Service worker caching
+- Lazy loading components
+- Optimistic UI updates
+- Connection-aware loading
+
+
+🔐 Security & Authentication
+Authentication Strategy
+// Multi-tier Authentication
+interface AuthSystem {
+  methods: {
+    email: boolean
+    phone: boolean // WhatsApp integration
+    social: ['Google', 'Facebook']
+  }
+  
+  sessions: {
+    jwt: boolean
+    refresh: boolean
+    multiDevice: boolean
+  }
+  
+  permissions: {
+    rbac: boolean // Role-based access
+    resourceLevel: boolean
+  }
+}
+
+Data Protection
+Security Measures:
+  - HTTPS everywhere
+  - Input sanitization
+  - Rate limiting
+  - CSRF protection
+  - XSS prevention
+  - SQL injection prevention
+  - PII encryption
+  - GDPR compliance
+
+
+📊 Analytics & Monitoring
+System Monitoring
+// Monitoring Stack
+interface MonitoringTools {
+  performance: 'Web Vitals + Lighthouse'
+  errors: 'Sentry'
+  analytics: 'Google Analytics 4'
+  uptime: 'UptimeRobot'
+  logs: 'Better Stack / LogTail'
+}
+
+Business Analytics
+Key Metrics:
+  - Match attendance rates
+  - Payment conversion
+  - User engagement
+  - Turf utilization
+  - Team balance effectiveness
+  - Notification open rates
+
+
+🔄 Integration Points
+Third-party Integrations
+Payment Gateways:
+  - Primary: Razorpay (India focus)
+  - Secondary: Stripe (International)
+
+Communication:
+  - WhatsApp Business API
+  - SendGrid (Email)
+  - Twilio (SMS backup)
+
+Maps & Location:
+  - Google Maps API
+  - Geolocation services
+
+Calendar:
+  - Google Calendar integration
+  - iCal export
+
+Turf Providers:
+  - PlaySpots API
+  - Playo integration
+  - Custom turf APIs
